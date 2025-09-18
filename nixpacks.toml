@@ -1,9 +1,9 @@
 [phases.setup]
-nixPkgs = ["chromium", "nss", "nss_latest", "nspr", "atk", "gtk3", "gtk2", "gdk-pixbuf", "glib", "pango", "cairo", "freetype", "fontconfig", "libX11", "libXext", "libXrender", "libXtst", "libXi", "libXdamage", "libXcomposite", "libXfixes", "libXrandr", "libxcb", "libxkbcommon", "libdrm", "mesa", "libGL", "alsa-lib", "dbus", "cups", "expat", "zlib", "libpng", "libjpeg", "libtiff", "libwebp", "wget", "gnupg", "apt"]
+nixPkgs = ["chromium", "nss", "nspr", "atk", "gtk3", "gdk-pixbuf", "glib", "pango", "cairo", "freetype", "fontconfig", "xorg.libX11", "xorg.libXext", "xorg.libXrender", "xorg.libXtst", "xorg.libXi", "xorg.libXdamage", "xorg.libXcomposite", "xorg.libXfixes", "xorg.libXrandr", "xorg.libxcb", "libxkbcommon", "libdrm", "mesa", "libGL", "alsa-lib", "dbus", "cups", "expat", "zlib", "libpng", "libjpeg", "libtiff", "libwebp", "wget", "gnupg"]
 
 [phases.install]
 cmds = [
-  "apt-get update && apt-get install -y wget gnupg software-properties-common",
+  "apt-get update && apt-get install -y wget gnupg software-properties-common unzip",
   "wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add -",
   "echo 'deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main' > /etc/apt/sources.list.d/google-chrome.list",
   "apt-get update && apt-get install -y google-chrome-stable",

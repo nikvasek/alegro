@@ -1,6 +1,6 @@
 {
   "build": {
-    "builder": "NIXPACKS"
+    "builder": "DOCKERFILE"
   },
   "deploy": {
     "startCommand": "python run_bot.py",
@@ -10,8 +10,8 @@
     "restartPolicyMaxRetries": 10
   },
   "variables": {
-    "PYTHON_VERSION": "3.9",
     "GOOGLE_CHROME_BIN": "/usr/bin/google-chrome",
-    "CHROMEDRIVER_PATH": "/usr/bin/chromedriver"
+    "CHROMEDRIVER_PATH": "/usr/bin/chromedriver",
+    "DISPLAY": ":99"
   }
 }
