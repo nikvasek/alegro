@@ -9,7 +9,6 @@ RUN apt-get update && apt-get install -y \
     curl \
     xvfb \
     ca-certificates \
-    software-properties-common \
     && rm -rf /var/lib/apt/lists/*
 
 # Устанавливаем Google Chrome (новый способ без apt-key)
