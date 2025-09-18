@@ -35,7 +35,7 @@ if __name__ == '__main__':
 EOF
 
 echo "🌐 Запуск тестового сервера..."
-python test_health.py &
+python3 test_health.py &
 SERVER_PID=$!
 
 echo ""
@@ -48,11 +48,11 @@ echo ""
 
 # Тестируем /health endpoint
 echo "📡 Тестирование /health:"
-curl -s http://localhost:8080/health | python -m json.tool
+curl -s http://localhost:8080/health | python3 -m json.tool
 
 echo ""
 echo "📡 Тестирование /:"
-curl -s http://localhost:8080/ | python -m json.tool
+curl -s http://localhost:8080/ | python3 -m json.tool
 
 echo ""
 echo "🛑 Остановка тестового сервера..."
