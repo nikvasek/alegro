@@ -34,8 +34,8 @@ file_handler = logging.FileHandler("bot_activity.log")
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
 activity_logger.addHandler(file_handler)
 
-# Токен бота (замените на ваш токен)
-BOT_TOKEN = "7258964094:AAHMvyGG7CbznDZcB34DGv7JoFPk5kA8H08"
+# Токен бота (читаем из переменной окружения или используем дефолтный)
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7258964094:AAHMvyGG7CbznDZcB34DGv7JoFPk5kA8H08")
 
 # ID владельца бота (замените на ваш Telegram ID)
 OWNER_ID = 6755735414
