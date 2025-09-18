@@ -1934,26 +1934,15 @@ def initialize_browser_and_login(headless=None, download_dir=None):
     print("🚀 ИНИЦИАЛИЗАЦИЯ БРАУЗЕРА: Создаем один браузер для всех групп")
     print(f"🔧 Используем headless режим: {headless}")
 
-    # Настройка драйвера Chrome
+    # Настройка драйвера Chrome для Railway/Linux
     options = webdriver.ChromeOptions()
+
+    # Основные аргументы для работы в контейнере
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-
-    # 🔥 ОТКЛЮЧАЕМ HEADLESS РЕЖИМ для наблюдения
-    if headless:
-        options.add_argument("--headless")
-    else:
-        print("👁️  HEADLESS РЕЖИМ ОТКЛЮЧЕН - можно наблюдать за процессом")
-
     options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument("--disable-extensions")
-    options.add_argument("--disable-logging")
-    options.add_argument("--disable-web-security")
-    options.add_argument("--allow-running-insecure-content")
-
-    # Отключаем кеширование
-    options.add_argument("--disable-application-cache")
+    options.add_argument("--disable-software-rasterizer")
+    options.add_argument("--remote-debugging-port=9222")
     options.add_argument("--disable-background-timer-throttling")
     options.add_argument("--disable-backgrounding-occluded-windows")
     options.add_argument("--disable-renderer-backgrounding")
@@ -1970,6 +1959,18 @@ def initialize_browser_and_login(headless=None, download_dir=None):
     options.add_argument("--disable-plugins")
     options.add_argument("--disable-plugins-discovery")
     options.add_argument("--disable-preconnect")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-logging")
+    options.add_argument("--disable-web-security")
+    options.add_argument("--allow-running-insecure-content")
+    options.add_argument("--disable-application-cache")
+    options.add_argument("--window-size=1920,1080")
+
+    # 🔥 ОТКЛЮЧАЕМ HEADLESS РЕЖИМ для наблюдения
+    if headless:
+        options.add_argument("--headless")
+    else:
+        print("👁️  HEADLESS РЕЖИМ ОТКЛЮЧЕН - можно наблюдать за процессом")
 
     # 🔥 КРИТИЧЕСКИ ВАЖНО: Настраиваем папку для скачивания файлов
     if download_dir:
@@ -1987,9 +1988,22 @@ def initialize_browser_and_login(headless=None, download_dir=None):
     else:
         print("⚠️  ВНИМАНИЕ: Папка для скачивания не указана - файлы будут скачиваться в папку по умолчанию")
 
-    # Создаем драйвер
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
+    # Создаем драйвер для Railway/Linux
+    try:
+        # Пытаемся использовать системный Chrome
+        options.binary_location = "/usr/bin/google-chrome"  # Путь к Chrome в Railway
+        service = Service(executable_path="/usr/bin/chromedriver")  # Путь к chromedriver
+        driver = webdriver.Chrome(service=service, options=options)
+        print("✅ Используем системный Chrome")
+    except Exception as e:
+        print(f"⚠️  Системный Chrome не найден, пробуем ChromeDriverManager: {e}")
+        try:
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=options)
+            print("✅ Используем ChromeDriverManager")
+        except Exception as e2:
+            print(f"❌ Ошибка создания драйвера: {e2}")
+            raise e2
 
     try:
         print("🔐 ЛОГИНИМСЯ В TRADEWATCH...")

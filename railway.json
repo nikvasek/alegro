@@ -10,6 +10,8 @@
     "restartPolicyMaxRetries": 10
   },
   "variables": {
-    "PYTHON_VERSION": "3.9"
+    "PYTHON_VERSION": "3.9",
+    "GOOGLE_CHROME_BIN": "/usr/bin/google-chrome",
+    "CHROMEDRIVER_PATH": "/usr/bin/chromedriver"
   }
 }
