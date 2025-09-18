@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, List
 import zipfile
 import time
-from flask import Flask
+from flask import Flask, request
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -46,6 +46,23 @@ def health_check():
         "timestamp": datetime.now().isoformat(),
         "service": "telegram_bot"
     }
+
+# Глобальная переменная для хранения application
+telegram_app = None
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Webhook endpoint для Telegram"""
+    global telegram_app
+    if telegram_app is None:
+        return {"error": "Bot not initialized"}, 500
+
+    if request.method == "POST":
+        update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+        asyncio.run(telegram_app.process_update(update))
+        return {"status": "ok"}
+
+    return {"error": "Method not allowed"}, 405
 
 @app.route('/health')
 def health():
@@ -201,6 +218,11 @@ class TelegramBot:
             connect_timeout=60  # 1 минута на подключение
         )
         self.application = Application.builder().token(token).request(request).build()
+
+        # Сохраняем application для webhook
+        global telegram_app
+        telegram_app = self.application
+
         self.setup_handlers()
 
     async def setup_bot_commands(self):
@@ -691,13 +713,30 @@ class TelegramBot:
     def run(self):
         """Запуск бота"""
         logger.info("Запуск Telegram бота...")
-        
+
         # Настраиваем команды меню при запуске
         async def post_init(application):
             await self.setup_bot_commands()
-        
+
         self.application.post_init = post_init
-        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+        # Выбираем режим работы: webhook или polling
+        use_webhook = os.getenv("USE_WEBHOOK", "false").lower() == "true"
+        webhook_url = os.getenv("WEBHOOK_URL", "")
+        webhook_port = int(os.getenv("WEBHOOK_PORT", "8443"))
+
+        if use_webhook and webhook_url:
+            logger.info(f"Запуск в режиме webhook: {webhook_url}")
+            self.application.run_webhook(
+                listen="0.0.0.0",
+                port=webhook_port,
+                url_path="webhook",
+                webhook_url=f"{webhook_url}/webhook",
+                allowed_updates=Update.ALL_TYPES
+            )
+        else:
+            logger.info("Запуск в режиме polling")
+            self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 def main():
     """Основная функция"""
