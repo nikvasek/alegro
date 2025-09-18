@@ -16,6 +16,10 @@ import concurrent.futures
 from datetime import datetime
 from selenium.webdriver.common.window import WindowTypes
 import config  # Импортируем настройки конфигурации
+import random
+
+# Глобальная блокировка для создания драйверов
+driver_creation_lock = threading.Lock()
 
 def find_generuj_button_safely(driver, wait):
     """
@@ -48,7 +52,96 @@ def find_generuj_button_safely(driver, wait):
             continue
     
     print("🚨 КРИТИЧЕСКАЯ ОШИБКА: Кнопка 'Generuj' не найдена ни одним из селекторов!")
+
+def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3):
+    """
+    Безопасно создает Chrome драйвер с блокировкой для предотвращения конфликтов
+    
+    Args:
+        headless: запуск в headless режиме
+        download_dir: папка для загрузки файлов
+        max_retries: максимальное количество попыток
+        
+    Returns:
+        webdriver.Chrome: инициализированный драйвер или None при ошибке
+    """
+    
+    for attempt in range(max_retries):
+        try:
+            # Добавляем случайную задержку для избежания одновременного доступа
+            time.sleep(random.uniform(0.5, 2.0))
+            
+            with driver_creation_lock:
+                print(f"🔒 Попытка {attempt + 1}/{max_retries}: Создание Chrome драйвера...")
+                
+                # Создаем опции Chrome
+                options = webdriver.ChromeOptions()
+                
+                if headless:
+                    options.add_argument("--headless")
+                    options.add_argument("--disable-gpu")
+                
+                # Основные опции для стабильной работы
+                options.add_argument("--no-sandbox")
+                options.add_argument("--disable-dev-shm-usage")
+                options.add_argument("--disable-web-security")
+                options.add_argument("--disable-features=VizDisplayCompositor")
+                options.add_argument("--window-size=1920,1080")
+                
+                # Настройка загрузки файлов
+                if download_dir:
+                    prefs = {
+                        "download.default_directory": download_dir,
+                        "download.prompt_for_download": False,
+                        "download.directory_upgrade": True,
+                        "safebrowsing.enabled": True
+                    }
+                    options.add_experimental_option("prefs", prefs)
+                
+                # Пытаемся использовать системный Chrome
+                try:
+                    options.binary_location = "/usr/bin/google-chrome"
+                    service = Service(executable_path="/usr/bin/chromedriver")
+                    driver = webdriver.Chrome(service=service, options=options)
+                    print("✅ Используем системный Chrome")
+                    return driver
+                except Exception as e:
+                    print(f"⚠️  Системный Chrome не найден: {e}")
+                    
+                    # Используем ChromeDriverManager с блокировкой
+                    service = Service(ChromeDriverManager().install())
+                    driver = webdriver.Chrome(service=service, options=options)
+                    print("✅ Используем ChromeDriverManager")
+                    return driver
+                        
+        except Exception as e:
+            print(f"❌ Попытка {attempt + 1} неудачна: {e}")
+            if attempt < max_retries - 1:
+                delay = (attempt + 1) * 2 + random.uniform(0, 1)  # Экспоненциальная задержка с рандомом
+                print(f"⏳ Ждем {delay:.1f} секунд перед следующей попыткой...")
+                time.sleep(delay)
+            else:
+                print(f"💥 Все {max_retries} попыток исчерпаны!")
+                raise e
+    
     return None
+
+def safe_get_downloaded_file(downloaded_files, context=""):
+    """
+    Безопасно получает первый файл из списка с проверкой на пустоту
+    
+    Args:
+        downloaded_files: список файлов
+        context: контекст для сообщения об ошибке
+        
+    Returns:
+        str: путь к файлу или None если список пуст
+    """
+    if downloaded_files and len(downloaded_files) > 0:
+        return downloaded_files[0]
+    else:
+        print(f"⚠️  {context}: Список загруженных файлов пуст, файл не найден")
+        return None
 
 def clear_ean_field_thoroughly(driver, ean_field, batch_number):
     """
@@ -548,7 +641,9 @@ def process_ean_codes_batch(ean_codes_batch, download_dir, batch_number=1, headl
                         downloaded_files = glob.glob(os.path.join(download_dir, "TradeWatch - raport konkurencji.xlsx"))
                         if downloaded_files:
                             # Проверяем, что файл полностью скачался (не изменяется в размере)
-                            latest_file = downloaded_files[0]  # Берем первый (и единственный) файл
+                            latest_file = safe_get_downloaded_file(downloaded_files, f"Группа {batch_number} - основная проверка")
+                            if not latest_file:
+                                return None
                             
                             # Ждем немного и проверяем, что размер файла не изменился
                             initial_size = os.path.getsize(latest_file)
@@ -602,7 +697,9 @@ def process_ean_codes_batch(ean_codes_batch, download_dir, batch_number=1, headl
                             
                             downloaded_files = glob.glob(os.path.join(download_dir, "TradeWatch - raport konkurencji.xlsx"))
                             if downloaded_files:
-                                latest_file = downloaded_files[0]
+                                latest_file = safe_get_downloaded_file(downloaded_files, f"Группа {batch_number} - альтернативная проверка")
+                                if not latest_file:
+                                    continue
                                 
                                 # Проверяем стабильность размера файла
                                 initial_size = os.path.getsize(latest_file)
@@ -829,7 +926,9 @@ def process_batch_in_session(driver, ean_codes_batch, download_dir, batch_number
                 downloaded_files = glob.glob(os.path.join(download_dir, "TradeWatch - raport konkurencji.xlsx"))
                 if downloaded_files:
                     # Проверяем, что файл полностью скачался
-                    latest_file = downloaded_files[0]
+                    latest_file = safe_get_downloaded_file(downloaded_files, f"Группа {batch_number} - основная загрузка")
+                    if not latest_file:
+                        continue
                     
                     # Ждем немного и проверяем, что размер файла не изменился
                     initial_size = os.path.getsize(latest_file)
@@ -942,7 +1041,9 @@ def process_batch_in_session(driver, ean_codes_batch, download_dir, batch_number
                     # Ищем скачанный файл
                     downloaded_files = glob.glob(os.path.join(download_dir, "TradeWatch - raport konkurencji.xlsx"))
                     if downloaded_files:
-                        latest_file = downloaded_files[0]
+                        latest_file = safe_get_downloaded_file(downloaded_files, f"Группа {batch_number} - альтернативная кнопка")
+                        if not latest_file:
+                            continue
                         
                         initial_size = os.path.getsize(latest_file)
                         time.sleep(3)
@@ -1231,7 +1332,9 @@ def process_batch_with_new_browser(ean_codes_batch, download_dir, batch_number, 
             # Ищем скачанный файл
             downloaded_files = glob.glob(os.path.join(download_dir, "TradeWatch - raport konkurencji.xlsx"))
             if downloaded_files:
-                latest_file = downloaded_files[0]
+                latest_file = safe_get_downloaded_file(downloaded_files, f"Группа {batch_number} - финальная проверка")
+                if not latest_file:
+                    continue
                 
                 # Проверяем стабильность размера файла
                 initial_size = os.path.getsize(latest_file)
@@ -2454,9 +2557,11 @@ def process_batch_in_separate_browser_with_unique_name(ean_codes_batch, download
     options.add_experimental_option("prefs", prefs)
     print(f"📁 Браузер {batch_number}: Уникальная папка для скачивания: {unique_download_path.absolute()}")
 
-    # Создаем драйвер
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
+    # Создаем драйвер с помощью безопасной функции
+    driver = create_chrome_driver_safely(headless=headless, download_dir=str(unique_download_path.absolute()))
+    if not driver:
+        print(f"❌ Браузер {batch_number}: Не удалось создать драйвер")
+        return None
 
     try:
         print(f"🔐 Браузер {batch_number}: ЛОГИНИМСЯ В TRADEWATCH...")
