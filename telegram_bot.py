@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, List
 import zipfile
 import time
+from flask import Flask
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -33,6 +34,23 @@ activity_logger.setLevel(logging.INFO)
 file_handler = logging.FileHandler("bot_activity.log")
 file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
 activity_logger.addHandler(file_handler)
+
+# Flask приложение для healthcheck
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    """Health check endpoint для Railway"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "service": "telegram_bot"
+    }
+
+@app.route('/health')
+def health():
+    """Альтернативный health check endpoint"""
+    return {"status": "ok", "bot": "running"}
 
 # Токен бота (читаем из переменной окружения или используем дефолтный)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7258964094:AAHMvyGG7CbznDZcB34DGv7JoFPk5kA8H08")
@@ -683,6 +701,18 @@ class TelegramBot:
 
 def main():
     """Основная функция"""
+    import threading
+
+    # Функция для запуска Flask сервера
+    def run_flask():
+        port = int(os.getenv("PORT", 8080))
+        app.run(host='0.0.0.0', port=port, debug=False)
+
+    # Запускаем Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+    # Запускаем Telegram бота
     bot = TelegramBot(BOT_TOKEN)
     bot.run()
 
