@@ -242,6 +242,24 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                         except Exception as emergency_error:
                             print(f"   ⚠️  Ошибка экстренной очистки: {emergency_error}")
                     
+                    # КРИТИЧЕСКАЯ ЗАЩИТА: ОСТАНОВКА СИСТЕМЫ ПРИ >100 ПРОЦЕССАХ
+                    if len(chrome_processes) > 100:
+                        print(f"   🚨 КАТАСТРОФА! {len(chrome_processes)} Chrome процессов!")
+                        print("   💀 АВАРИЙНАЯ ОСТАНОВКА СИСТЕМЫ...")
+                        try:
+                            # Убиваем все процессы с максимальной силой
+                            subprocess.run(["killall", "-9", "-f", "chrome"], capture_output=True, check=False)
+                            subprocess.run(["killall", "-9", "-f", "chromium"], capture_output=True, check=False)
+                            subprocess.run(["killall", "-9", "-f", "chromedriver"], capture_output=True, check=False)
+                            subprocess.run(["pkill", "-9", "-f", "python"], capture_output=True, check=False)
+                            print("   💀 Система принудительно остановлена из-за переполнения процессов")
+                            print("   🔄 Перезапустите приложение после очистки")
+                            # Выходим из функции с ошибкой
+                            raise RuntimeError(f"Катастрофическое переполнение процессов: {len(chrome_processes)}")
+                        except Exception as critical_error:
+                            print(f"   ⚠️  Ошибка аварийной остановки: {critical_error}")
+                            raise critical_error
+                    
                 except Exception as diag_error:
                     print(f"   ⚠️  Ошибка диагностики: {diag_error}")
                 
@@ -3717,6 +3735,20 @@ def process_supplier_file_with_tradewatch_single_browser(supplier_file_path, dow
             if driver:
                 print("🔒 ЗАКРЫВАЕМ БРАУЗЕР ПОСЛЕ ВСЕХ ГРУПП")
                 driver.quit()
+                
+                # 🔥 ПРИНУДИТЕЛЬНАЯ ОЧИСТКА ПРОЦЕССОВ ПОСЛЕ ЗАКРЫТИЯ БРАУЗЕРА
+                print("🧹 ПРИНУДИТЕЛЬНАЯ ОЧИСТКА ПРОЦЕССОВ ПОСЛЕ ЗАКРЫТИЯ БРАУЗЕРА...")
+                try:
+                    # Убиваем все висячие процессы этого браузера
+                    subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True, check=False)
+                    subprocess.run(["pkill", "-9", "-f", "chromedriver"], capture_output=True, check=False)
+                    
+                    # Ждем завершения процессов
+                    time.sleep(1)
+                    
+                    print("✅ Очистка процессов после закрытия браузера выполнена")
+                except Exception as cleanup_error:
+                    print(f"⚠️  Ошибка очистки после закрытия браузера: {cleanup_error}")
 
         print(f"\n🏁 Обработка завершена. Загружено {len(downloaded_files)} файлов из {len(batches)} групп")
 
