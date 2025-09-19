@@ -1,6 +1,8 @@
 import logging
 import os
 import asyncio
+import gc
+import psutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
@@ -12,6 +14,13 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboard
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.constants import ParseMode
 import pandas as pd
+
+# Railway-специфичная конфигурация
+try:
+    from railway_config import setup_railway_limits
+    setup_railway_limits()
+except ImportError:
+    print("⚠️ Railway config не найден, используем стандартные настройки")
 
 # Импортируем наши функции для обработки Excel
 from merge_excel_with_calculations import process_supplier_with_tradewatch_auto
@@ -74,8 +83,67 @@ def webhook():
 
 @app.route('/health')
 def health():
-    """Альтернативный health check endpoint"""
-    return {"status": "ok", "bot": "running"}
+    """Расширенный health check endpoint для Railway"""
+    import psutil
+    import gc
+    
+    try:
+        # Проверка системных ресурсов
+        memory = psutil.virtual_memory()
+        cpu_percent = psutil.cpu_percent()
+        disk_usage = psutil.disk_usage('/')
+        
+        # Проверка Chrome процессов
+        chrome_processes = len([p for p in psutil.process_iter() if 'chrome' in p.name().lower()])
+        
+        # Проверка temp файлов
+        temp_files_count = len(list(Path('temp_files').rglob('*'))) if Path('temp_files').exists() else 0
+        
+        # Определение статуса здоровья
+        health_status = "healthy"
+        issues = []
+        
+        # Проверки
+        if memory.percent > 90:
+            health_status = "warning"
+            issues.append(f"High memory usage: {memory.percent}%")
+            
+        if chrome_processes > 10:
+            health_status = "warning" 
+            issues.append(f"Too many Chrome processes: {chrome_processes}")
+            
+        if temp_files_count > 1000:
+            health_status = "warning"
+            issues.append(f"Too many temp files: {temp_files_count}")
+            
+        response = {
+            "status": health_status,
+            "timestamp": datetime.now().isoformat(),
+            "service": "telegram_bot",
+            "system": {
+                "memory_percent": memory.percent,
+                "cpu_percent": cpu_percent,
+                "disk_free_gb": round(disk_usage.free / 1024 / 1024 / 1024, 2)
+            },
+            "bot": {
+                "chrome_processes": chrome_processes,
+                "temp_files": temp_files_count,
+                "active_users": len(processing_progress)
+            },
+            "issues": issues
+        }
+        
+        # Возвращаем HTTP 200 для healthy/warning, 503 для critical
+        http_status = 200 if health_status in ["healthy", "warning"] else 503
+        return response, http_status
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "timestamp": datetime.now().isoformat(),
+            "service": "telegram_bot", 
+            "error": str(e)
+        }, 503
 
 @app.route('/metrics')
 def metrics():
@@ -113,6 +181,33 @@ def metrics():
     
     return metrics_data
 
+@app.route('/cleanup', methods=['POST'])
+def force_cleanup():
+    """Endpoint для принудительной очистки ресурсов"""
+    try:
+        cleanup_result = cleanup_resources()
+        
+        # Дополнительная информация о состоянии
+        memory = psutil.virtual_memory()
+        chrome_processes = len([p for p in psutil.process_iter() if 'chrome' in p.name().lower()])
+        temp_files = len(list(Path('temp_files').rglob('*'))) if Path('temp_files').exists() else 0
+        
+        return {
+            "status": "success" if cleanup_result else "partial",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "after_cleanup": {
+                "memory_percent": memory.percent,
+                "chrome_processes": chrome_processes,
+                "temp_files": temp_files
+            }
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }, 500
+
 # Токен бота (читаем из переменной окружения или используем дефолтный)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7258964094:AAHMvyGG7CbznDZcB34DGv7JoFPk5kA8H08")
 
@@ -129,6 +224,55 @@ user_supplier_files: Dict[int, str] = {}
 # Глобальные переменные для отслеживания прогресса
 processing_progress = {}
 active_timers = {}
+
+def cleanup_resources():
+    """Очистка ресурсов для предотвращения зависаний"""
+    try:
+        # Принудительная сборка мусора
+        gc.collect()
+        
+        # Убиваем зависшие Chrome процессы
+        killed_processes = 0
+        for proc in psutil.process_iter(['pid', 'name', 'create_time']):
+            try:
+                if 'chrome' in proc.info['name'].lower():
+                    # Убиваем процессы старше 30 минут
+                    if time.time() - proc.info['create_time'] > 1800:
+                        proc.kill()
+                        killed_processes += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        
+        # Очистка временных файлов старше 1 часа
+        temp_dir = Path('temp_files')
+        if temp_dir.exists():
+            current_time = time.time()
+            for file_path in temp_dir.rglob('*'):
+                try:
+                    if file_path.is_file() and current_time - file_path.stat().st_mtime > 3600:
+                        file_path.unlink()
+                except:
+                    pass
+        
+        if killed_processes > 0:
+            print(f"🧹 Очищено: {killed_processes} зависших Chrome процессов")
+            
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка очистки ресурсов: {e}")
+        return False
+
+def check_memory_limits():
+    """Проверка лимитов памяти и принудительная очистка при необходимости"""
+    try:
+        memory = psutil.virtual_memory()
+        if memory.percent > 85:
+            print(f"⚠️ Высокое использование памяти: {memory.percent}%")
+            cleanup_resources()
+            return False
+        return True
+    except:
+        return True
 
 class ProcessingTimer:
     """Класс для отслеживания прогресса обработки EAN кодов"""
@@ -536,6 +680,14 @@ class TelegramBot:
 
     async def create_report(self, query, user_id: int):
         """Создание отчёта с автоматическим получением данных TradeWatch"""
+        # Проверка ресурсов перед началом обработки
+        if not check_memory_limits():
+            await query.edit_message_text(
+                "⚠️ Система перегружена. Попробуйте через несколько минут.",
+                reply_markup=self.get_main_keyboard(user_id)
+            )
+            return
+            
         if user_id not in user_supplier_files or not user_supplier_files[user_id]:
             await query.edit_message_text(
                 "📁 Сначала загрузите файл поставщика!\n\n"
@@ -765,6 +917,20 @@ class TelegramBot:
         # Настраиваем команды меню при запуске
         async def post_init(application):
             await self.setup_bot_commands()
+            
+            # Запускаем периодическую очистку ресурсов каждые 5 минут
+            def cleanup_task():
+                while True:
+                    try:
+                        time.sleep(300)  # 5 минут
+                        cleanup_resources()
+                    except Exception as e:
+                        print(f"❌ Ошибка в задаче очистки: {e}")
+            
+            import threading
+            cleanup_thread = threading.Thread(target=cleanup_task, daemon=True)
+            cleanup_thread.start()
+            logger.info("🧹 Запущена задача периодической очистки ресурсов")
 
         self.application.post_init = post_init
 

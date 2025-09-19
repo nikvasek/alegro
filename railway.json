@@ -3,15 +3,18 @@
     "builder": "DOCKERFILE"
   },
   "deploy": {
-    "startCommand": "python run_bot.py",
+    "startCommand": "gunicorn --bind 0.0.0.0:8080 --workers 1 --timeout 900 --worker-class sync --max-requests 100 --max-requests-jitter 10 telegram_bot:app",
     "healthcheckPath": "/health",
-    "healthcheckTimeout": 30,
+    "healthcheckTimeout": 60,
     "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 10
+    "restartPolicyMaxRetries": 3
   },
   "variables": {
     "GOOGLE_CHROME_BIN": "/usr/bin/google-chrome",
     "CHROMEDRIVER_PATH": "/usr/bin/chromedriver",
-    "DISPLAY": ":99"
+    "DISPLAY": ":99",
+    "RAILWAY_ENVIRONMENT": "production",
+    "PYTHONUNBUFFERED": "1",
+    "CHROME_NO_SANDBOX": "true"
   }
 }

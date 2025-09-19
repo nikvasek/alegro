@@ -47,5 +47,5 @@ ENV DISPLAY=:99
 # Экспонируем порт
 EXPOSE 8080
 
-# Команда запуска c gunicorn для production
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "300", "--worker-class", "sync", "telegram_bot:app"]
+# Команда запуска c gunicorn для production с увеличенными timeout для Railway
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "900", "--worker-class", "sync", "--max-requests", "100", "--max-requests-jitter", "10", "--preload", "telegram_bot:app"]
