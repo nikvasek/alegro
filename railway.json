@@ -3,7 +3,7 @@
     "builder": "DOCKERFILE"
   },
   "deploy": {
-    "startCommand": "gunicorn --bind 0.0.0.0:8080 --workers 1 --timeout 900 --worker-class sync --max-requests 100 --max-requests-jitter 10 telegram_bot:app",
+    "startCommand": "python telegram_bot.py",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 60,
     "restartPolicyType": "ON_FAILURE",

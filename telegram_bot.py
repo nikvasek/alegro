@@ -955,18 +955,28 @@ class TelegramBot:
 def main():
     """Основная функция"""
     import threading
+    import os
+    import time
 
+    # Получаем порт из переменной окружения Railway
+    port = int(os.getenv("PORT", 8080))
+    
     # Функция для запуска Flask сервера
     def run_flask():
-        port = int(os.getenv("PORT", 8080))
         app.run(host='0.0.0.0', port=port, debug=False)
 
     # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
+    
+    logger.info(f"Flask сервер запущен на порту {port}")
+    
+    # Даем время Flask серверу запуститься
+    time.sleep(2)
 
     # Запускаем Telegram бота
     bot = TelegramBot(BOT_TOKEN)
+    logger.info("Запуск Telegram бота...")
     bot.run()
 
 if __name__ == "__main__":
