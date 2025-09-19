@@ -197,6 +197,70 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
             with driver_creation_lock:
                 print(f"🔒 Попытка {attempt + 1}/{max_retries}: Создание Chrome драйвера...")
                 
+                # ГЛУБОКАЯ ДИАГНОСТИКА СИСТЕМНЫХ РЕСУРСОВ
+                print("🔍 ГЛУБОКАЯ ДИАГНОСТИКА СИСТЕМНЫХ РЕСУРСОВ:")
+                try:
+                    # Проверяем память
+                    memory = psutil.virtual_memory()
+                    print(f"   💾 Память: {memory.available / 1024 / 1024:.0f}MB свободно из {memory.total / 1024 / 1024:.0f}MB")
+                    
+                    # Проверяем CPU
+                    cpu_percent = psutil.cpu_percent(interval=1)
+                    print(f"   🖥️  CPU: {cpu_percent}% загрузка")
+                    
+                    # Проверяем диск
+                    disk = psutil.disk_usage('/')
+                    print(f"   💿 Диск: {disk.free / 1024 / 1024:.0f}MB свободно")
+                    
+                    # Проверяем процессы Chrome
+                    chrome_processes = []
+                    for proc in psutil.process_iter(['pid', 'name', 'memory_info']):
+                        try:
+                            if 'chrome' in proc.info['name'].lower() or 'chromium' in proc.info['name'].lower():
+                                chrome_processes.append(proc.info)
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            continue
+                    
+                    print(f"   🌐 Chrome процессов: {len(chrome_processes)}")
+                    for proc in chrome_processes[:3]:  # Показываем первые 3
+                        memory_mb = proc['memory_info'].rss / 1024 / 1024 if proc['memory_info'] else 0
+                        print(f"      PID {proc['pid']}: {proc['name']} ({memory_mb:.0f}MB)")
+                        
+                except Exception as diag_error:
+                    print(f"   ⚠️  Ошибка диагностики: {diag_error}")
+                
+                # ПРОВЕРКА ДОСТУПНОСТИ CHROME И CHROMEDRIVER
+                print("🔍 ПРОВЕРКА ДОСТУПНОСТИ CHROME:")
+                chrome_available = False
+                chromedriver_available = False
+                
+                # Проверяем системный Chrome
+                try:
+                    result = subprocess.run(["/usr/bin/google-chrome", "--version"], 
+                                          capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        chrome_available = True
+                        print(f"   ✅ Системный Chrome доступен: {result.stdout.strip()}")
+                    else:
+                        print(f"   ❌ Системный Chrome недоступен: {result.stderr}")
+                except Exception as e:
+                    print(f"   ❌ Ошибка проверки системного Chrome: {e}")
+                
+                # Проверяем ChromeDriver
+                try:
+                    result = subprocess.run(["/usr/bin/chromedriver", "--version"], 
+                                          capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        chromedriver_available = True
+                        print(f"   ✅ ChromeDriver доступен: {result.stdout.strip()}")
+                    else:
+                        print(f"   ❌ ChromeDriver недоступен: {result.stderr}")
+                except Exception as e:
+                    print(f"   ❌ Ошибка проверки ChromeDriver: {e}")
+                
+                if not chrome_available or not chromedriver_available:
+                    print("   🚨 Chrome или ChromeDriver недоступны! Попытка использовать ChromeDriverManager...")
+                
                 # АГРЕССИВНАЯ ОЧИСТКА: Принудительно убиваем ВСЕ висячие процессы
                 try:
                     import subprocess
@@ -226,21 +290,58 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                 except Exception as e:
                     print(f"⚠️ Ошибка при очистке процессов: {e}")
                 
-                # Очистка памяти перед созданием нового браузера
-                try:
-                    import gc
-                    gc.collect()  # Принудительная сборка мусора
-                except:
-                    pass
+                # ПРОВЕРКА СИСТЕМНЫХ РЕСУРСОВ ПЕРЕД ЗАПУСКОМ
+                print("🔍 ПРОВЕРКА СИСТЕМНЫХ РЕСУРСОВ:")
+                memory_ok = False
+                cpu_ok = False
                 
-                # Создаем опции Chrome
+                try:
+                    # Проверяем память (минимум 400MB свободно для Chrome)
+                    memory = psutil.virtual_memory()
+                    min_free_memory = config.RESOURCE_MANAGEMENT.get('min_free_memory_mb', 400) * 1024 * 1024
+                    memory_ok = memory.available >= min_free_memory
+                    print(f"   💾 Память: {memory_ok} ({memory.available / 1024 / 1024:.0f}MB >= {min_free_memory / 1024 / 1024:.0f}MB)")
+                    
+                    # Проверяем CPU (не более 80% загрузки)
+                    cpu_percent = psutil.cpu_percent(interval=0.5)
+                    cpu_ok = cpu_percent < 80
+                    print(f"   🖥️  CPU: {cpu_ok} ({cpu_percent:.1f}% < 80%)")
+                    
+                    if not memory_ok or not cpu_ok:
+                        print("⚠️  НЕДОСТАТОЧНО РЕСУРСОВ ДЛЯ ЗАПУСКА CHROME!")
+                        if not memory_ok:
+                            print("   💡 Рекомендация: увеличить память или уменьшить количество браузеров")
+                        if not cpu_ok:
+                            print("   💡 Рекомендация: уменьшить нагрузку на CPU")
+                        
+                        # Для Railway - ждем освобождения ресурсов
+                        print("⏳ Ждем освобождения ресурсов (10 сек)...")
+                        time.sleep(10)
+                        
+                        # Повторная проверка
+                        memory = psutil.virtual_memory()
+                        cpu_percent = psutil.cpu_percent(interval=0.5)
+                        memory_ok = memory.available >= min_free_memory
+                        cpu_ok = cpu_percent < 80
+                        
+                        if not memory_ok or not cpu_ok:
+                            print("❌ Ресурсы все еще недостаточны, пропускаем попытку")
+                            continue  # Пропускаем эту попытку
+                        else:
+                            print("✅ Ресурсы освободились, продолжаем")
+                    
+                except Exception as resource_error:
+                    print(f"⚠️  Ошибка проверки ресурсов: {resource_error}")
+                    print("   Продолжаем без проверки ресурсов...")
+                
+                # Создаем опции Chrome с Railway-специфичными настройками
                 options = webdriver.ChromeOptions()
                 
                 if headless:
                     options.add_argument("--headless")
                     options.add_argument("--disable-gpu")
                 
-                # Основные опции для стабильной работы + анти-краш настройки
+                # ОСНОВНЫЕ ОПЦИИ ДЛЯ RAILWAY КОНТЕЙНЕРА
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-dev-shm-usage")
                 options.add_argument("--disable-web-security")
@@ -256,6 +357,32 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                 options.add_argument("--disable-backgrounding-occluded-windows")
                 options.add_argument("--disable-renderer-backgrounding")
                 
+                # ДОПОЛНИТЕЛЬНЫЕ НАСТРОЙКИ ДЛЯ RAILWAY
+                options.add_argument("--disable-software-rasterizer")
+                options.add_argument("--disable-background-networking")
+                options.add_argument("--disable-default-apps")
+                options.add_argument("--disable-sync")
+                options.add_argument("--disable-translate")
+                options.add_argument("--hide-scrollbars")
+                options.add_argument("--metrics-recording-only")
+                options.add_argument("--mute-audio")
+                options.add_argument("--no-first-run")
+                options.add_argument("--safebrowsing-disable-auto-update")
+                options.add_argument("--single-process")  # Важно для контейнеров
+                
+                # ОГРАНИЧЕНИЯ РЕСУРСОВ ДЛЯ КОНТЕЙНЕРА
+                options.add_argument("--max_old_space_size=512")  # Ограничение памяти JavaScript
+                options.add_argument("--memory-pressure-off")  # Отключение мониторинга памяти
+                
+                # СЕТЕВЫЕ НАСТРОЙКИ ДЛЯ КОНТЕЙНЕРА
+                options.add_argument("--disable-ipc-flooding-protection")
+                options.add_argument("--disable-hang-monitor")
+                options.add_argument("--disable-prompt-on-repost")
+                options.add_argument("--force-color-profile=srgb")
+                options.add_argument("--disable-component-extensions-with-background-pages")
+                
+                print(f"🔧 Настройки Chrome: headless={headless}, Railway-оптимизированные")
+                
                 # Настройка загрузки файлов
                 if download_dir:
                     prefs = {
@@ -266,24 +393,114 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                     }
                     options.add_experimental_option("prefs", prefs)
                 
+                # ПРОВЕРКА ДОСТУПНОСТИ ПОРТА WEBDRIVER
+                print("🔍 ПРОВЕРКА ПОРТА WEBDRIVER:")
+                port_available = False
+                
+                try:
+                    import socket
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(1)
+                    result = sock.connect_ex(('127.0.0.1', 9515))
+                    sock.close()
+                    
+                    if result == 0:
+                        print("   ❌ Порт 9515 занят! Попытка освободить...")
+                        # Пытаемся убить процесс на порту
+                        try:
+                            result = subprocess.run(["lsof", "-ti:9515"], capture_output=True, text=True, check=False)
+                            if result.stdout.strip():
+                                for pid in result.stdout.strip().split('\n'):
+                                    if pid:
+                                        os.kill(int(pid), signal.SIGKILL)
+                                        print(f"   💀 Убит процесс {pid} на порту 9515")
+                                time.sleep(2)  # Ждем завершения
+                                
+                                # Повторная проверка
+                                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                sock.settimeout(1)
+                                result = sock.connect_ex(('127.0.0.1', 9515))
+                                sock.close()
+                                
+                                if result != 0:
+                                    port_available = True
+                                    print("   ✅ Порт 9515 освобожден")
+                                else:
+                                    print("   ❌ Порт 9515 все еще занят")
+                            else:
+                                print("   ⚠️  lsof не нашел процессов на порту 9515")
+                        except Exception as port_kill_error:
+                            print(f"   ⚠️  Ошибка освобождения порта: {port_kill_error}")
+                    else:
+                        port_available = True
+                        print("   ✅ Порт 9515 свободен")
+                        
+                except Exception as port_check_error:
+                    print(f"   ⚠️  Ошибка проверки порта: {port_check_error}")
+                    port_available = True  # Предполагаем, что порт доступен
+                
                 # Пытаемся использовать системный Chrome
                 try:
                     options.binary_location = "/usr/bin/google-chrome"
                     service = Service(executable_path="/usr/bin/chromedriver")
+                    print("🚀 Запуск Chrome с системными бинарными файлами...")
                     driver = webdriver.Chrome(service=service, options=options)
                     print("✅ Используем системный Chrome с предустановленным ChromeDriver")
                     return driver
                 except Exception as e:
-                    print(f"⚠️  Системный Chrome не найден или версия не совпадает: {e}")
+                    error_msg = str(e)
+                    print(f"⚠️  Системный Chrome не найден или версия не совпадает: {error_msg}")
+                    
+                    # ДЕТАЛЬНЫЙ АНАЛИЗ ОШИБКИ ПОДКЛЮЧЕНИЯ
+                    if "connection refused" in error_msg.lower():
+                        print("🔍 АНАЛИЗ ОШИБКИ ПОДКЛЮЧЕНИЯ:")
+                        print("   - ChromeDriver не может подключиться к Chrome")
+                        print("   - Возможные причины: порт занят, Chrome не запустился, ресурсы исчерпаны")
+                        
+                        # Проверяем, не остался ли Chrome процесс
+                        try:
+                            result = subprocess.run(["pgrep", "-f", "chrome"], capture_output=True, text=True)
+                            if result.stdout.strip():
+                                print(f"   - Найдены висячие Chrome процессы: {result.stdout.strip()}")
+                                subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True)
+                                print("   - Висячие процессы убиты")
+                            else:
+                                print("   - Висячих Chrome процессов не найдено")
+                        except Exception as pgrep_error:
+                            print(f"   - Ошибка проверки процессов: {pgrep_error}")
+                            
+                    elif "version" in error_msg.lower():
+                        print("🔍 АНАЛИЗ ВЕРСИОННОЙ ОШИБКИ:")
+                        print("   - Несовпадение версий Chrome и ChromeDriver")
+                        print("   - Попытка использовать ChromeDriverManager...")
+                        
+                    elif "session not created" in error_msg.lower():
+                        print("🔍 АНАЛИЗ ОШИБКИ СЕАНСА:")
+                        print("   - Chrome не может создать сессию")
+                        print("   - Возможные причины: недостаточно памяти, поврежденные настройки")
                     
                     # Используем ChromeDriverManager как fallback с улучшенной обработкой
                     try:
+                        print("🔄 Попытка с ChromeDriverManager...")
                         service = Service(ChromeDriverManager().install())
                         driver = webdriver.Chrome(service=service, options=options)
                         print("✅ Используем ChromeDriverManager (автоматическое совпадение версий)")
                         return driver
                     except Exception as wdm_error:
-                        print(f"❌ ChromeDriverManager тоже не сработал: {wdm_error}")
+                        wdm_error_msg = str(wdm_error)
+                        print(f"❌ ChromeDriverManager тоже не сработал: {wdm_error_msg}")
+                        
+                        # ДОПОЛНИТЕЛЬНЫЕ РЕКОМЕНДАЦИИ ПО ОШИБКАМ
+                        if "connection refused" in wdm_error_msg.lower():
+                            print("💡 РЕКОМЕНДАЦИИ:")
+                            print("   - Проверьте доступность порта 9515")
+                            print("   - Убедитесь, что Chrome может запускаться в контейнере")
+                            print("   - Попробуйте увеличить задержки между запусками")
+                        elif "memory" in wdm_error_msg.lower():
+                            print("💡 РЕКОМЕНДАЦИИ:")
+                            print("   - Недостаточно памяти для запуска Chrome")
+                            print("   - Рассмотрите уменьшение количества одновременных браузеров")
+                        
                         raise wdm_error
                         
         except Exception as e:
