@@ -121,16 +121,20 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                     options.binary_location = "/usr/bin/google-chrome"
                     service = Service(executable_path="/usr/bin/chromedriver")
                     driver = webdriver.Chrome(service=service, options=options)
-                    print("✅ Используем системный Chrome")
+                    print("✅ Используем системный Chrome с предустановленным ChromeDriver")
                     return driver
                 except Exception as e:
-                    print(f"⚠️  Системный Chrome не найден: {e}")
+                    print(f"⚠️  Системный Chrome не найден или версия не совпадает: {e}")
                     
-                    # Используем ChromeDriverManager с блокировкой
-                    service = Service(ChromeDriverManager().install())
-                    driver = webdriver.Chrome(service=service, options=options)
-                    print("✅ Используем ChromeDriverManager")
-                    return driver
+                    # Используем ChromeDriverManager как fallback с улучшенной обработкой
+                    try:
+                        service = Service(ChromeDriverManager().install())
+                        driver = webdriver.Chrome(service=service, options=options)
+                        print("✅ Используем ChromeDriverManager (автоматическое совпадение версий)")
+                        return driver
+                    except Exception as wdm_error:
+                        print(f"❌ ChromeDriverManager тоже не сработал: {wdm_error}")
+                        raise wdm_error
                         
         except Exception as e:
             error_msg = str(e)

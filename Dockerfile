@@ -18,14 +18,19 @@ RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearm
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем совместимый ChromeDriver для Chrome 140+
-RUN CHROME_VERSION=$(google-chrome --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+') \
+# Устанавливаем совместимый ChromeDriver с fallback на webdriver-manager
+RUN CHROME_VERSION=$(google-chrome --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+') \
     && echo "Chrome version: $CHROME_VERSION" \
-    && wget -O /tmp/chromedriver.zip "https://storage.googleapis.com/chrome-for-testing-public/$CHROME_VERSION/linux64/chromedriver-linux64.zip" \
-    && unzip /tmp/chromedriver.zip -d /tmp/ \
-    && mv /tmp/chromedriver-linux64/chromedriver /usr/bin/chromedriver \
-    && chmod +x /usr/bin/chromedriver \
-    && rm -rf /tmp/chromedriver*
+    && (wget -O /tmp/chromedriver.zip "https://storage.googleapis.com/chrome-for-testing-public/$CHROME_VERSION/linux64/chromedriver-linux64.zip" \
+        && unzip /tmp/chromedriver.zip -d /tmp/ \
+        && mv /tmp/chromedriver-linux64/chromedriver /usr/bin/chromedriver \
+        && chmod +x /usr/bin/chromedriver \
+        && rm -rf /tmp/chromedriver* \
+        && echo "✅ ChromeDriver установлен напрямую для версии $CHROME_VERSION" \
+    ) || ( \
+        echo "⚠️ Прямая установка не удалась, используем webdriver-manager в runtime" \
+        && echo "Chrome версия $CHROME_VERSION будет обработана webdriver-manager" \
+    )
 
 # Устанавливаем рабочую директорию
 WORKDIR /app
