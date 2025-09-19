@@ -280,9 +280,9 @@ LARGE_FILE_OPTIMIZATIONS = {
 
 # Настройки задержек и проверок ресурсов
 RESOURCE_MANAGEMENT = {
-    'browser_start_delay': 2,          # Задержка между запуском браузеров (секунды)
+    'browser_start_delay': 7,          # Задержка между запуском браузеров (секунды) - увеличено для стабильности
     'memory_check_before_browser': True,  # Проверять память перед запуском браузера
-    'min_free_memory_mb': 200,         # Минимальный объем свободной памяти (MB)
+    'min_free_memory_mb': 300,         # Минимальный объем свободной памяти (MB) - увеличено
     'cpu_check_before_browser': True,  # Проверять CPU перед запуском браузера
-    'max_cpu_usage_percent': 80        # Максимальная загрузка CPU (%)
+    'max_cpu_usage_percent': 75        # Максимальная загрузка CPU (%) - уменьшено для стабильности
 }

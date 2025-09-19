@@ -129,33 +129,48 @@ def check_system_resources():
     Проверяет системные ресурсы перед запуском браузера
     
     Returns:
-        bool: True если ресурсов достаточно, False если нужно подождать
+        tuple: (bool, int) - (ресурсы доступны, рекомендуемое количество браузеров)
     """
     try:
         # Проверяем память
-        if config.RESOURCE_MANAGEMENT.get('memory_check_before_browser', True):
-            memory = psutil.virtual_memory()
-            free_memory_mb = memory.available / 1024 / 1024
-            min_free_memory = config.RESOURCE_MANAGEMENT.get('min_free_memory_mb', 200)
-            
-            if free_memory_mb < min_free_memory:
-                print(f"⚠️ Недостаточно памяти: {free_memory_mb:.1f}MB свободно, требуется {min_free_memory}MB")
-                return False
+        memory = psutil.virtual_memory()
+        free_memory_mb = memory.available / 1024 / 1024
+        memory_percent = memory.percent
         
         # Проверяем CPU
-        if config.RESOURCE_MANAGEMENT.get('cpu_check_before_browser', True):
-            cpu_usage = psutil.cpu_percent(interval=1)
-            max_cpu_usage = config.RESOURCE_MANAGEMENT.get('max_cpu_usage_percent', 80)
-            
-            if cpu_usage > max_cpu_usage:
-                print(f"⚠️ Высокая загрузка CPU: {cpu_usage:.1f}%, максимум {max_cpu_usage}%")
-                return False
+        cpu_usage = psutil.cpu_percent(interval=1)
         
-        return True
+        # Определяем рекомендуемое количество браузеров на основе ресурсов
+        recommended_browsers = 1  # Минимум 1 браузер
+        
+        if free_memory_mb > 500 and cpu_usage < 60:
+            recommended_browsers = 2  # Оптимально для большинства случаев
+        elif free_memory_mb > 300 and cpu_usage < 75:
+            recommended_browsers = 1  # Безопасный режим
+        else:
+            recommended_browsers = 1  # Экономичный режим
+        
+        print(f"📊 Ресурсы: Память {free_memory_mb:.0f}MB ({memory_percent:.1f}%), CPU {cpu_usage:.1f}%, Рекомендуется: {recommended_browsers} браузер(ов)")
+        
+        # Проверяем минимальные требования
+        min_free_memory = config.RESOURCE_MANAGEMENT.get('min_free_memory_mb', 300)
+        max_cpu_usage = config.RESOURCE_MANAGEMENT.get('max_cpu_usage_percent', 75)
+        
+        memory_ok = free_memory_mb >= min_free_memory
+        cpu_ok = cpu_usage <= max_cpu_usage
+        
+        if not memory_ok:
+            print(f"⚠️ Недостаточно памяти: {free_memory_mb:.1f}MB свободно, требуется {min_free_memory}MB")
+        if not cpu_ok:
+            print(f"⚠️ Высокая загрузка CPU: {cpu_usage:.1f}%, максимум {max_cpu_usage}%")
+        
+        resources_ok = memory_ok and cpu_ok
+        
+        return resources_ok, recommended_browsers
         
     except Exception as e:
         print(f"⚠️ Ошибка при проверке ресурсов: {e}")
-        return True  # В случае ошибки проверки разрешаем продолжение
+        return True, 1  # В случае ошибки проверки разрешаем продолжение с 1 браузером
 
 def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3):
     """
@@ -172,8 +187,12 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
     
     for attempt in range(max_retries):
         try:
-            # Добавляем случайную задержку для избежания одновременного доступа
-            time.sleep(random.uniform(0.5, 2.0))
+            # Экспоненциальная задержка с jitter для избежания одновременного доступа
+            base_delay = 2 ** attempt  # 1, 2, 4 секунды
+            jitter = random.uniform(0.5, 1.5)
+            delay = base_delay * jitter
+            print(f"⏳ Задержка перед попыткой {attempt + 1}: {delay:.1f} сек")
+            time.sleep(delay)
             
             with driver_creation_lock:
                 print(f"🔒 Попытка {attempt + 1}/{max_retries}: Создание Chrome драйвера...")
@@ -186,6 +205,13 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                     time.sleep(1)  # Даем время процессам завершиться
                 except:
                     pass  # Игнорируем ошибки очистки процессов
+                
+                # Очистка памяти перед созданием нового браузера
+                try:
+                    import gc
+                    gc.collect()  # Принудительная сборка мусора
+                except:
+                    pass
                 
                 # Создаем опции Chrome
                 options = webdriver.ChromeOptions()
@@ -1742,8 +1768,19 @@ def process_supplier_file_with_tradewatch_old_version(supplier_file_path, downlo
             
         finally:
             # Закрываем браузер в конце
-            print("Закрываем браузер...")
-            driver.quit()
+            print("🔒 Закрываем браузер...")
+            try:
+                driver.quit()
+            except Exception as e:
+                print(f"⚠️ Ошибка при закрытии браузера: {e}")
+            
+            # Очистка памяти после закрытия браузера
+            try:
+                import gc
+                gc.collect()  # Принудительная сборка мусора
+                print("🧹 Память очищена после закрытия браузера")
+            except Exception as e:
+                print(f"⚠️ Ошибка при очистке памяти: {e}")
         
     except Exception as e:
         print(f"Ошибка при обработке файла поставщика: {e}")
@@ -1791,11 +1828,13 @@ def process_multiple_batches_parallel(main_driver, ean_groups, download_dir, max
                 batch_number = i + j + 1
                 
                 # Проверяем ресурсы перед запуском браузера
-                if not check_system_resources():
+                resources_ok, recommended = check_system_resources()
+                if not resources_ok:
                     print(f"⏳ Ждем освобождения ресурсов перед запуском браузера {batch_number}...")
                     time.sleep(5)
                     # Повторная проверка
-                    if not check_system_resources():
+                    resources_ok, recommended = check_system_resources()
+                    if not resources_ok:
                         print(f"⚠️ Ресурсы все еще недоступны, пропускаем браузер {batch_number}")
                         continue
                 
@@ -2986,6 +3025,14 @@ def process_batch_in_separate_browser_with_unique_name(ean_codes_batch, download
             driver.quit()
         except Exception as e:
             print(f"⚠️ Ошибка при закрытии браузера {batch_number}: {e}")
+        
+        # Очистка памяти после закрытия браузера
+        try:
+            import gc
+            gc.collect()  # Принудительная сборка мусора
+            print(f"🧹 Память очищена после закрытия браузера {batch_number}")
+        except Exception as e:
+            print(f"⚠️ Ошибка при очистке памяти для браузера {batch_number}: {e}")
 
 
 def process_batches_independent(batches, download_dir, headless=None, max_parallel=None, progress_callback=None):
@@ -3165,11 +3212,13 @@ def process_batches_parallel(batches, download_dir, headless=None, max_parallel=
                 batch_number = i + j + 1
                 
                 # Проверяем ресурсы перед запуском браузера
-                if not check_system_resources():
+                resources_ok, recommended = check_system_resources()
+                if not resources_ok:
                     print(f"⏳ Ждем освобождения ресурсов перед запуском браузера {batch_number}...")
                     time.sleep(5)
                     # Повторная проверка
-                    if not check_system_resources():
+                    resources_ok, recommended = check_system_resources()
+                    if not resources_ok:
                         print(f"⚠️ Ресурсы все еще недоступны, пропускаем браузер {batch_number}")
                         continue
                 
@@ -3210,15 +3259,18 @@ def process_batches_parallel(batches, download_dir, headless=None, max_parallel=
                     error_message = str(e).lower()
                     
                     # Определяем тип ошибки для улучшения обработки
-                    if any(keyword in error_message for keyword in ['connection', 'timeout', 'network', 'unreachable']):
+                    if any(keyword in error_message for keyword in ['connection', 'timeout', 'network', 'unreachable', 'refused', 'disconnected']):
                         print(f"🌐 Сетевая ошибка при обработке группы {batch_number} (браузер не перезапускается): {e}")
-                        # Не перезапускаем браузер при сетевых ошибках
+                        # При сетевых ошибках ждем дольше перед следующей попыткой
+                        time.sleep(10)
                     elif any(keyword in error_message for keyword in ['webdriver', 'chrome', 'browser', 'driver']):
                         print(f"🔧 Ошибка браузера при обработке группы {batch_number}: {e}")
-                        # При ошибках браузера тоже не перезапускаем
+                        # При ошибках браузера тоже ждем
+                        time.sleep(5)
                     else:
-                        print(f"❌ Исключение при обработке группы {batch_number}: {e}")
-                        # Для других ошибок логируем для анализа
+                        print(f"❌ Неизвестная ошибка при обработке группы {batch_number}: {e}")
+                        # Для других ошибок тоже ждем
+                        time.sleep(3)
         
         print(f"🏁 Пачка {i//max_parallel + 1} завершена. Обработано групп: {len([f for f in downloaded_files if f])}")
     
