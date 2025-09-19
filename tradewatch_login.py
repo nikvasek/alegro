@@ -22,6 +22,10 @@ import psutil
 import subprocess
 import signal
 import socket
+from selenium.common.exceptions import TimeoutException, WebDriverException, SessionNotCreatedException
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Глобальная блокировка для создания драйверов
 driver_creation_lock = threading.Lock()
@@ -29,6 +33,192 @@ driver_creation_lock = threading.Lock()
 # Глобальный реестр активных драйверов и их процессов
 active_drivers = {}
 driver_lock = threading.Lock()
+
+# Настройки подключения для HTTP-запросов
+HTTP_TIMEOUT = (10, 30)  # (connect_timeout, read_timeout)
+MAX_RETRIES = 3
+BACKOFF_FACTOR = 1.0
+
+def create_robust_session():
+    """
+    Создает HTTP сессию с настройками повторных попыток и пулом соединений
+    
+    Returns:
+        requests.Session: настроенная сессия
+    """
+    session = requests.Session()
+    
+    # Настройка стратегии повторных попыток
+    retry_strategy = Retry(
+        total=MAX_RETRIES,
+        status_forcelist=[429, 500, 502, 503, 504],
+        method_whitelist=["HEAD", "GET", "OPTIONS"],
+        backoff_factor=BACKOFF_FACTOR
+    )
+    
+    # Применяем стратегию к HTTP и HTTPS
+    adapter = HTTPAdapter(
+        max_retries=retry_strategy,
+        pool_connections=10,  # Размер пула соединений
+        pool_maxsize=20       # Максимальное количество соединений в пуле
+    )
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    
+    return session
+
+def webdriver_request_with_retry(driver, url, max_retries=3, base_delay=2):
+    """
+    Выполняет HTTP-запрос через WebDriver с повторными попытками при ошибках соединения
+    
+    Args:
+        driver: веб-драйвер
+        url: URL для загрузки
+        max_retries: максимальное количество попыток
+        base_delay: базовая задержка между попытками
+        
+    Returns:
+        bool: True если успешно, False если все попытки неудачны
+    """
+    for attempt in range(max_retries):
+        try:
+            print(f"🌐 Попытка {attempt + 1}/{max_retries}: загрузка {url}")
+            
+            # Устанавливаем таймауты для веб-драйвера
+            driver.set_page_load_timeout(60)  # Таймаут загрузки страницы
+            driver.implicitly_wait(10)        # Неявное ожидание элементов
+            
+            # Выполняем запрос
+            driver.get(url)
+            
+            # Проверяем, что страница загрузилась
+            WebDriverWait(driver, 15).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+            
+            print(f"   ✅ URL загружен успешно за попытку {attempt + 1}")
+            return True
+            
+        except TimeoutException as e:
+            print(f"   ⏰ Попытка {attempt + 1}: таймаут загрузки - {e}")
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                print(f"   ⏳ Ждем {delay:.1f} сек перед следующей попыткой...")
+                time.sleep(delay)
+            
+        except WebDriverException as e:
+            error_msg = str(e).lower()
+            print(f"   ❌ Попытка {attempt + 1}: ошибка WebDriver - {e}")
+            
+            # Особая обработка ошибок соединения
+            if any(keyword in error_msg for keyword in ["connection refused", "connection reset", "connection aborted", "network unreachable"]):
+                print(f"   🔍 Обнаружена ошибка сетевого соединения")
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt) + random.uniform(1, 3)
+                    print(f"   🔄 Сетевая ошибка: ждем {delay:.1f} сек...")
+                    time.sleep(delay)
+                    
+                    # Попытка восстановления соединения через обновление драйвера
+                    try:
+                        print(f"   🔧 Попытка восстановления соединения...")
+                        driver.refresh()
+                        time.sleep(2)
+                    except:
+                        print(f"   ⚠️ Не удалось восстановить соединение")
+                else:
+                    print(f"   💥 Все попытки исчерпаны для сетевых ошибок")
+                    return False
+            else:
+                # Другие ошибки WebDriver
+                if attempt < max_retries - 1:
+                    delay = base_delay + random.uniform(0, 1)
+                    print(f"   ⏳ Обычная ошибка: ждем {delay:.1f} сек...")
+                    time.sleep(delay)
+                else:
+                    print(f"   💥 Все попытки исчерпаны для обычных ошибок")
+                    return False
+                    
+        except Exception as e:
+            print(f"   ❌ Попытка {attempt + 1}: неожиданная ошибка - {e}")
+            if attempt < max_retries - 1:
+                delay = base_delay * 1.5 + random.uniform(0, 2)
+                print(f"   ⏳ Неожиданная ошибка: ждем {delay:.1f} сек...")
+                time.sleep(delay)
+            else:
+                print(f"   💥 Все попытки исчерпаны для неожиданных ошибок")
+                return False
+    
+    print(f"❌ Не удалось загрузить {url} за {max_retries} попыток")
+    return False
+
+def monitor_chrome_processes():
+    """
+    Мониторит количество Chrome процессов и принимает превентивные меры
+    
+    Returns:
+        int: количество Chrome процессов
+    """
+    try:
+        chrome_processes = []
+        for proc in psutil.process_iter(['pid', 'name', 'memory_info', 'create_time']):
+            try:
+                if 'chrome' in proc.info['name'].lower() or 'chromium' in proc.info['name'].lower():
+                    chrome_processes.append(proc.info)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        
+        process_count = len(chrome_processes)
+        
+        # Критический уровень процессов
+        if process_count > 500:
+            print(f"🚨 Слишком много Chrome процессов: {process_count}")
+            
+            # Получаем защищенные PID активных драйверов
+            protected_pids = set()
+            with driver_lock:
+                for driver_info in active_drivers.values():
+                    protected_pids.update(driver_info.get('pids', []))
+            
+            # Убиваем старые/висячие процессы (исключая активные драйверы)
+            killed_count = 0
+            current_time = time.time()
+            
+            for proc_info in chrome_processes:
+                pid = proc_info['pid']
+                
+                # Защищаем активные драйверы
+                if pid in protected_pids:
+                    continue
+                
+                # Убиваем процессы старше 5 минут
+                try:
+                    create_time = proc_info.get('create_time', current_time)
+                    age_minutes = (current_time - create_time) / 60
+                    
+                    if age_minutes > 5:  # Старше 5 минут
+                        os.kill(pid, signal.SIGKILL)
+                        killed_count += 1
+                except (OSError, psutil.NoSuchProcess):
+                    pass
+            
+            if killed_count > 0:
+                print(f"🔪 Убито {killed_count} старых Chrome процессов")
+            
+            # Дополнительная глобальная очистка если процессов все еще много
+            final_count = len([p for p in psutil.process_iter(['name']) 
+                              if 'chrome' in p.info['name'].lower()])
+            
+            if final_count > 300 and len(protected_pids) == 0:
+                print(f"🧹 Очищено: {final_count} зависших Chrome процессов")
+                subprocess.run(["pkill", "-9", "-f", "chrome"], 
+                             capture_output=True, check=False)
+                time.sleep(1)
+        
+        return process_count
+        
+    except Exception as e:
+        print(f"⚠️ Ошибка мониторинга процессов: {e}")
+        return 0
 
 def save_processing_checkpoint(checkpoint_data, checkpoint_file='processing_checkpoint.json'):
     """
@@ -611,9 +801,16 @@ def safe_cleanup_driver(driver):
         with driver_lock:
             driver_info = active_drivers.get(driver_id)
         
-        # Закрываем драйвер
-        safe_cleanup_driver(driver)
-        print(f"   ✅ Безопасная очистка выполнена")
+        # Закрываем драйвер правильно (НЕ рекурсивно!)
+        try:
+            driver.quit()  # Правильное закрытие драйвера
+        except Exception as quit_error:
+            print(f"   ⚠️ Ошибка при quit(): {quit_error}")
+            try:
+                driver.close()  # Резервное закрытие
+            except Exception as close_error:
+                print(f"   ⚠️ Ошибка при close(): {close_error}")
+        print(f"   ✅ Драйвер закрыт")
         
         # Убиваем только процессы этого драйвера
         if driver_info and 'pids' in driver_info:
@@ -1063,8 +1260,10 @@ def process_ean_codes_batch(ean_codes_batch, download_dir, batch_number=1, headl
     try:
         print(f"Обработка группы {batch_number} с {len(ean_codes_batch)} EAN кодами...")
         
-        # Переход на страницу входа
-        driver.get("https://tradewatch.pl/login.jsf")
+        # Переход на страницу входа с повторными попытками
+        if not webdriver_request_with_retry(driver, "https://tradewatch.pl/login.jsf"):
+            print(f"❌ Не удалось загрузить страницу входа для группы {batch_number}")
+            return []
         
         # Ждем загрузки страницы
         wait = WebDriverWait(driver, 10)
@@ -1098,8 +1297,10 @@ def process_ean_codes_batch(ean_codes_batch, download_dir, batch_number=1, headl
         if "login.jsf" not in current_url:
             print("Успешный вход в систему!")
             
-            # Переходим на страницу EAN Price Report
-            driver.get("https://tradewatch.pl/report/ean-price-report.jsf")
+            # Переходим на страницу EAN Price Report с повторными попытками
+            if not webdriver_request_with_retry(driver, "https://tradewatch.pl/report/ean-price-report.jsf"):
+                print(f"❌ Не удалось загрузить страницу отчетов для группы {batch_number}")
+                return []
             time.sleep(3)
             
             try:
