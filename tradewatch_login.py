@@ -19,6 +19,8 @@ import config  # Импортируем настройки конфигурац�
 import random
 import json
 import psutil
+import subprocess
+import signal
 
 # Глобальная блокировка для создания драйверов
 driver_creation_lock = threading.Lock()
@@ -225,7 +227,21 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                     for proc in chrome_processes[:3]:  # Показываем первые 3
                         memory_mb = proc['memory_info'].rss / 1024 / 1024 if proc['memory_info'] else 0
                         print(f"      PID {proc['pid']}: {proc['name']} ({memory_mb:.0f}MB)")
-                        
+                    
+                    # ЭКСТРЕННАЯ ПРОВЕРКА КОЛИЧЕСТВА ПРОЦЕССОВ
+                    if len(chrome_processes) > 50:
+                        print(f"   🚨 КРИТИЧНО! {len(chrome_processes)} Chrome процессов!")
+                        print("   💥 ЭКСТРЕННАЯ ОЧИСТКА ПЕРЕД ЗАПУСКОМ...")
+                        try:
+                            # Немедленная экстренная очистка
+                            subprocess.run(["killall", "-9", "chrome"], capture_output=True, check=False)
+                            subprocess.run(["killall", "-9", "chromium"], capture_output=True, check=False)
+                            subprocess.run(["killall", "-9", "chromedriver"], capture_output=True, check=False)
+                            time.sleep(3)
+                            print("   ✅ Экстренная очистка выполнена")
+                        except Exception as emergency_error:
+                            print(f"   ⚠️  Ошибка экстренной очистки: {emergency_error}")
+                    
                 except Exception as diag_error:
                     print(f"   ⚠️  Ошибка диагностики: {diag_error}")
                 
@@ -261,32 +277,85 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                 if not chrome_available or not chromedriver_available:
                     print("   🚨 Chrome или ChromeDriver недоступны! Попытка использовать ChromeDriverManager...")
                 
-                # АГРЕССИВНАЯ ОЧИСТКА: Принудительно убиваем ВСЕ висячие процессы
+                # СУПЕР-АГРЕССИВНАЯ ОЧИСТКА: Принудительно убиваем ВСЕ висячие процессы
                 try:
-                    import subprocess
-                    import signal
-                    import os
-                    
-                    # Убиваем все Chrome процессы
+                    print("🔥 СУПЕР-АГРЕССИВНАЯ ОЧИСТКА ПРОЦЕССОВ...")
+
+                    # 1. Проверяем количество Chrome процессов ДО очистки
+                    chrome_count_before = 0
+                    try:
+                        result = subprocess.run(["pgrep", "-f", "chrome"], capture_output=True, text=True)
+                        if result.stdout.strip():
+                            chrome_count_before = len(result.stdout.strip().split('\n'))
+                        print(f"   📊 Chrome процессов до очистки: {chrome_count_before}")
+                    except:
+                        pass
+
+                    # 2. Убиваем все Chrome процессы разными способами
+                    subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True, check=False)
+                    subprocess.run(["pkill", "-9", "-f", "chromium"], capture_output=True, check=False)
+                    subprocess.run(["pkill", "-9", "-f", "chromedriver"], capture_output=True, check=False)
                     subprocess.run(["pkill", "-9", "chrome"], capture_output=True, check=False)
                     subprocess.run(["pkill", "-9", "chromium"], capture_output=True, check=False)
                     subprocess.run(["pkill", "-9", "chromedriver"], capture_output=True, check=False)
-                    
-                    # Убиваем процессы на портах WebDriver (обычно 9515)
+
+                    # 3. Убиваем процессы на всех возможных портах WebDriver
+                    for port in [9515, 9222, 9223, 9224, 9225]:
+                        try:
+                            result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True, check=False)
+                            if result.stdout.strip():
+                                for pid in result.stdout.strip().split('\n'):
+                                    if pid:
+                                        try:
+                                            os.kill(int(pid), signal.SIGKILL)
+                                            print(f"   💀 Убит процесс {pid} на порту {port}")
+                                        except:
+                                            pass
+                        except:
+                            pass
+
+                    # 4. Дополнительная очистка через ps и kill
                     try:
-                        result = subprocess.run(["lsof", "-ti:9515"], capture_output=True, text=True, check=False)
-                        if result.stdout.strip():
-                            for pid in result.stdout.strip().split('\n'):
-                                if pid:
-                                    os.kill(int(pid), signal.SIGKILL)
+                        # Находим все процессы chrome/chromium
+                        result = subprocess.run(["ps", "aux"], capture_output=True, text=True)
+                        if result.stdout:
+                            for line in result.stdout.split('\n'):
+                                if 'chrome' in line.lower() or 'chromium' in line.lower():
+                                    try:
+                                        pid = line.split()[1]
+                                        os.kill(int(pid), signal.SIGKILL)
+                                        print(f"   💀 Дополнительно убит процесс {pid}")
+                                    except:
+                                        pass
                     except:
                         pass
-                    
-                    # Ждем завершения процессов
-                    time.sleep(2)
-                    
-                    print("🧹 Агрессивная очистка процессов выполнена")
-                    
+
+                    # 5. Ждем завершения процессов (увеличенное время)
+                    time.sleep(3)
+
+                    # 6. Проверяем результат очистки
+                    chrome_count_after = 0
+                    try:
+                        result = subprocess.run(["pgrep", "-f", "chrome"], capture_output=True, text=True)
+                        if result.stdout.strip():
+                            chrome_count_after = len(result.stdout.strip().split('\n'))
+                        print(f"   📊 Chrome процессов после очистки: {chrome_count_after}")
+                        print(f"   ✅ Убито процессов: {chrome_count_before - chrome_count_after}")
+                    except:
+                        pass
+
+                    # 7. Если все еще много процессов - ПАНИКА!
+                    if chrome_count_after > 10:
+                        print(f"   🚨 КРИТИЧНО! Все еще {chrome_count_after} Chrome процессов!")
+                        print("   💥 ЭКСТРЕННАЯ ОЧИСТКА: перезапуск всех Chrome процессов...")
+                        # Убиваем все процессы chrome с максимальной силой
+                        subprocess.run(["killall", "-9", "chrome"], capture_output=True, check=False)
+                        subprocess.run(["killall", "-9", "chromium"], capture_output=True, check=False)
+                        subprocess.run(["killall", "-9", "chromedriver"], capture_output=True, check=False)
+                        time.sleep(5)
+
+                    print("🧹 Супер-агрессивная очистка процессов выполнена")
+
                 except Exception as e:
                     print(f"⚠️ Ошибка при очистке процессов: {e}")
                 
