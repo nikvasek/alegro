@@ -3,6 +3,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Bot specific files
+bot_activity.log
+*.log
+.DS_Store
+
 # C extensions
 *.so
 
