@@ -18,6 +18,7 @@ from selenium.webdriver.common.window import WindowTypes
 import config  # Импортируем настройки конфигурации
 import random
 import json
+import psutil
 
 # Глобальная блокировка для создания драйверов
 driver_creation_lock = threading.Lock()
@@ -121,6 +122,40 @@ def find_generuj_button_safely(driver, wait):
             continue
     
     print("🚨 КРИТИЧЕСКАЯ ОШИБКА: Кнопка 'Generuj' не найдена ни одним из селекторов!")
+    return None
+
+def check_system_resources():
+    """
+    Проверяет системные ресурсы перед запуском браузера
+    
+    Returns:
+        bool: True если ресурсов достаточно, False если нужно подождать
+    """
+    try:
+        # Проверяем память
+        if config.RESOURCE_MANAGEMENT.get('memory_check_before_browser', True):
+            memory = psutil.virtual_memory()
+            free_memory_mb = memory.available / 1024 / 1024
+            min_free_memory = config.RESOURCE_MANAGEMENT.get('min_free_memory_mb', 200)
+            
+            if free_memory_mb < min_free_memory:
+                print(f"⚠️ Недостаточно памяти: {free_memory_mb:.1f}MB свободно, требуется {min_free_memory}MB")
+                return False
+        
+        # Проверяем CPU
+        if config.RESOURCE_MANAGEMENT.get('cpu_check_before_browser', True):
+            cpu_usage = psutil.cpu_percent(interval=1)
+            max_cpu_usage = config.RESOURCE_MANAGEMENT.get('max_cpu_usage_percent', 80)
+            
+            if cpu_usage > max_cpu_usage:
+                print(f"⚠️ Высокая загрузка CPU: {cpu_usage:.1f}%, максимум {max_cpu_usage}%")
+                return False
+        
+        return True
+        
+    except Exception as e:
+        print(f"⚠️ Ошибка при проверке ресурсов: {e}")
+        return True  # В случае ошибки проверки разрешаем продолжение
 
 def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3):
     """
@@ -1754,6 +1789,21 @@ def process_multiple_batches_parallel(main_driver, ean_groups, download_dir, max
             
             for j, group in enumerate(batch_to_process):
                 batch_number = i + j + 1
+                
+                # Проверяем ресурсы перед запуском браузера
+                if not check_system_resources():
+                    print(f"⏳ Ждем освобождения ресурсов перед запуском браузера {batch_number}...")
+                    time.sleep(5)
+                    # Повторная проверка
+                    if not check_system_resources():
+                        print(f"⚠️ Ресурсы все еще недоступны, пропускаем браузер {batch_number}")
+                        continue
+                
+                # Добавляем задержку между запусками браузеров для предотвращения перегрузки
+                if j > 0:
+                    delay = config.RESOURCE_MANAGEMENT.get('browser_start_delay', 2)
+                    time.sleep(delay)
+                
                 future = executor.submit(
                     process_batch_in_separate_browser, 
                     group, 
@@ -1769,7 +1819,18 @@ def process_multiple_batches_parallel(main_driver, ean_groups, download_dir, max
                     if result:
                         results.append(result)
                 except Exception as e:
-                    print(f"Ошибка при обработке группы: {e}")
+                    error_message = str(e).lower()
+                    
+                    # Определяем тип ошибки
+                    if any(keyword in error_message for keyword in ['connection', 'timeout', 'network', 'unreachable']):
+                        print(f"🌐 Сетевая ошибка при обработке группы (браузер не перезапускается): {e}")
+                        # Не перезапускаем браузер при сетевых ошибках
+                    elif any(keyword in error_message for keyword in ['webdriver', 'chrome', 'browser', 'driver']):
+                        print(f"🔧 Ошибка браузера при обработке группы: {e}")
+                        # При ошибках браузера тоже не перезапускаем
+                    else:
+                        print(f"❌ Неизвестная ошибка при обработке группы: {e}")
+                        # Для других ошибок логируем для анализа
         
         if i + max_parallel < len(ean_groups):
             print("Пауза между пакетами групп...")
@@ -3098,15 +3159,33 @@ def process_batches_parallel(batches, download_dir, headless=None, max_parallel=
         # Запускаем параллельную обработку для текущей пачки
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
             # Создаем задачи для каждой группы в пачке
-            future_to_batch = {
-                executor.submit(
+            future_to_batch = {}
+            
+            for j, batch in enumerate(current_batch_group):
+                batch_number = i + j + 1
+                
+                # Проверяем ресурсы перед запуском браузера
+                if not check_system_resources():
+                    print(f"⏳ Ждем освобождения ресурсов перед запуском браузера {batch_number}...")
+                    time.sleep(5)
+                    # Повторная проверка
+                    if not check_system_resources():
+                        print(f"⚠️ Ресурсы все еще недоступны, пропускаем браузер {batch_number}")
+                        continue
+                
+                # Добавляем задержку между запусками браузеров для предотвращения перегрузки
+                if j > 0:
+                    delay = config.RESOURCE_MANAGEMENT.get('browser_start_delay', 2)
+                    time.sleep(delay)
+                
+                future = executor.submit(
                     process_batch_in_separate_browser_with_unique_name,
                     batch,
                     download_dir,
-                    i + j + 1,  # номер группы
+                    batch_number,  # номер группы
                     headless
-                ): (i + j + 1, batch) for j, batch in enumerate(current_batch_group)
-            }
+                )
+                future_to_batch[future] = (batch_number, batch)
             
             # Ожидаем завершения всех задач в пачке
             for future in concurrent.futures.as_completed(future_to_batch):
@@ -3128,7 +3207,18 @@ def process_batches_parallel(batches, download_dir, headless=None, max_parallel=
                         print(f"❌ Ошибка при обработке группы {batch_number} в отдельном браузере")
                         
                 except Exception as e:
-                    print(f"❌ Исключение при обработке группы {batch_number}: {e}")
+                    error_message = str(e).lower()
+                    
+                    # Определяем тип ошибки для улучшения обработки
+                    if any(keyword in error_message for keyword in ['connection', 'timeout', 'network', 'unreachable']):
+                        print(f"🌐 Сетевая ошибка при обработке группы {batch_number} (браузер не перезапускается): {e}")
+                        # Не перезапускаем браузер при сетевых ошибках
+                    elif any(keyword in error_message for keyword in ['webdriver', 'chrome', 'browser', 'driver']):
+                        print(f"🔧 Ошибка браузера при обработке группы {batch_number}: {e}")
+                        # При ошибках браузера тоже не перезапускаем
+                    else:
+                        print(f"❌ Исключение при обработке группы {batch_number}: {e}")
+                        # Для других ошибок логируем для анализа
         
         print(f"🏁 Пачка {i//max_parallel + 1} завершена. Обработано групп: {len([f for f in downloaded_files if f])}")
     

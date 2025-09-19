@@ -277,3 +277,12 @@ LARGE_FILE_OPTIMIZATIONS = {
     'progress_report_interval': 10,    # Сообщать прогресс каждые N групп
     'health_check_interval': 30        # Проверять здоровье системы каждые N групп
 }
+
+# Настройки задержек и проверок ресурсов
+RESOURCE_MANAGEMENT = {
+    'browser_start_delay': 2,          # Задержка между запуском браузеров (секунды)
+    'memory_check_before_browser': True,  # Проверять память перед запуском браузера
+    'min_free_memory_mb': 200,         # Минимальный объем свободной памяти (MB)
+    'cpu_check_before_browser': True,  # Проверять CPU перед запуском браузера
+    'max_cpu_usage_percent': 80        # Максимальная загрузка CPU (%)
+}
