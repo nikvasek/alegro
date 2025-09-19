@@ -442,12 +442,36 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                 
                 # АВТОМАТИЧЕСКИЙ ВЫБОР ПОРТА: позволяем Service выбрать свободный порт
                 print("🔍 НАСТРОЙКА АВТОПОРТА WEBDRIVER:")
-                print("   ✅ Используем автоматический выбор порта (Service выберет свободный)")
+                
+                # Генерируем случайный свободный порт для каждого драйвера
+                import random
+                import socket
+                
+                def find_free_port():
+                    """Находит свободный порт в диапазоне 9515-9600"""
+                    for _ in range(10):  # Максимум 10 попыток
+                        port = random.randint(9515, 9600)
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                            try:
+                                s.bind(('localhost', port))
+                                return port
+                            except OSError:
+                                continue
+                    return 0  # Позволяем системе выбрать порт
+                
+                driver_port = find_free_port()
+                if driver_port == 0:
+                    print("   ✅ Используем автоматический выбор порта системой")
+                else:
+                    print(f"   ✅ Используем проверенный свободный порт: {driver_port}")
                 
                 # Попытка использования системного ChromeDriver
                 try:
                     print("🔧 Попытка использования системного ChromeDriver...")
-                    service = Service(executable_path="/usr/bin/chromedriver")
+                    if driver_port == 0:
+                        service = Service(executable_path="/usr/bin/chromedriver")
+                    else:
+                        service = Service(executable_path="/usr/bin/chromedriver", port=driver_port)
                     
                     driver = webdriver.Chrome(service=service, options=options)
                     
@@ -495,10 +519,13 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                         print("   - Chrome не может создать сессию")
                         print("   - Возможные причины: недостаточно памяти, поврежденные настройки")
                     
-                    # Используем ChromeDriverManager как fallback
+                    # Используем ChromeDriverManager как fallback с тем же портом
                     try:
-                        print("🔧 Попытка через ChromeDriverManager...")
-                        service = Service(ChromeDriverManager().install())
+                        print(f"🔧 Попытка через ChromeDriverManager...")
+                        if driver_port == 0:
+                            service = Service(ChromeDriverManager().install())
+                        else:
+                            service = Service(ChromeDriverManager().install(), port=driver_port)
                         driver = webdriver.Chrome(service=service, options=options)
                         
                         # Регистрируем драйвер и отслеживаем его процессы
