@@ -122,6 +122,11 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=5)
                 options.add_argument("--disable-prompt-on-repost")
                 options.add_argument("--disable-domain-reliability")
                 options.add_argument("--disable-component-extensions-with-background-pages")
+                options.add_argument("--disable-ipc-flooding-protection")
+                options.add_argument("--disable-background-timer-throttling")
+                options.add_argument("--disable-renderer-backgrounding")
+                options.add_argument("--disable-features=VizDisplayCompositor,VizHitTestSurfaceLayer")
+                options.add_argument("--single-process")  # Для Railway - один процесс для экономии ресурсов
                 
                 # Настройка загрузки файлов
                 if download_dir:
@@ -2926,6 +2931,12 @@ def process_batches_independent(batches, download_dir, headless=None, max_parall
         # Получаем разрешение на запуск браузера
         semaphore.acquire()
         try:
+            # Добавляем задержку между запуском браузеров для стабильности в Railway
+            if batch_number > 1:
+                delay = min(3 + (batch_number - 1) * 2, 15)  # Прогрессивная задержка до 15 сек
+                print(f"⏳ БРАУЗЕР {batch_number}: Ждем {delay} сек перед запуском для стабильности...")
+                time.sleep(delay)
+            
             print(f"🔥 НЕЗАВИСИМЫЙ БРАУЗЕР {batch_number}: Запуск автономной обработки группы {batch_number}")
             
             result = process_batch_in_separate_browser_with_unique_name(
