@@ -197,14 +197,34 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
             with driver_creation_lock:
                 print(f"🔒 Попытка {attempt + 1}/{max_retries}: Создание Chrome драйвера...")
                 
-                # КРИТИЧЕСКИ ВАЖНО: Принудительно убиваем висячие Chrome процессы
+                # АГРЕССИВНАЯ ОЧИСТКА: Принудительно убиваем ВСЕ висячие процессы
                 try:
                     import subprocess
+                    import signal
+                    import os
+                    
+                    # Убиваем все Chrome процессы
                     subprocess.run(["pkill", "-9", "chrome"], capture_output=True, check=False)
+                    subprocess.run(["pkill", "-9", "chromium"], capture_output=True, check=False)
                     subprocess.run(["pkill", "-9", "chromedriver"], capture_output=True, check=False)
-                    time.sleep(1)  # Даем время процессам завершиться
-                except:
-                    pass  # Игнорируем ошибки очистки процессов
+                    
+                    # Убиваем процессы на портах WebDriver (обычно 9515)
+                    try:
+                        result = subprocess.run(["lsof", "-ti:9515"], capture_output=True, text=True, check=False)
+                        if result.stdout.strip():
+                            for pid in result.stdout.strip().split('\n'):
+                                if pid:
+                                    os.kill(int(pid), signal.SIGKILL)
+                    except:
+                        pass
+                    
+                    # Ждем завершения процессов
+                    time.sleep(2)
+                    
+                    print("🧹 Агрессивная очистка процессов выполнена")
+                    
+                except Exception as e:
+                    print(f"⚠️ Ошибка при очистке процессов: {e}")
                 
                 # Очистка памяти перед созданием нового браузера
                 try:
@@ -1821,7 +1841,7 @@ def process_multiple_batches_parallel(main_driver, ean_groups, download_dir, max
         print(f"Обрабатываем параллельно группы {i+1}-{min(i+max_parallel, len(ean_groups))}")
         
         # Используем потоки для параллельной обработки с отдельными браузерами
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=current_max_parallel) as executor:
             futures = []
             
             for j, group in enumerate(batch_to_process):
@@ -3196,17 +3216,20 @@ def process_batches_parallel(batches, download_dir, headless=None, max_parallel=
     
     downloaded_files = []
     processed_count = 0
+    consecutive_failures = 0  # Счетчик последовательных неудач
+    current_max_parallel = max_parallel  # Текущее максимальное количество браузеров
     
     # Обрабатываем группы пачками по max_parallel
-    for i in range(0, len(batches), max_parallel):
-        current_batch_group = batches[i:i + max_parallel]
+    for i in range(0, len(batches), current_max_parallel):
+        current_batch_group = batches[i:i + current_max_parallel]
         
-        print(f"\n🔄 ОБРАБАТЫВАЕМ ПАЧКУ {i//max_parallel + 1}: группы {i+1}-{i+len(current_batch_group)} из {len(batches)}")
+        print(f"\n🔄 ОБРАБАТЫВАЕМ ПАЧКУ {i//current_max_parallel + 1}: группы {i+1}-{i+len(current_batch_group)} из {len(batches)} (макс. {current_max_parallel} браузеров)")
         
         # Запускаем параллельную обработку для текущей пачки
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=current_max_parallel) as executor:
             # Создаем задачи для каждой группы в пачке
             future_to_batch = {}
+            batch_failures = 0  # Неудачи в текущей пачке
             
             for j, batch in enumerate(current_batch_group):
                 batch_number = i + j + 1
@@ -3272,7 +3295,7 @@ def process_batches_parallel(batches, download_dir, headless=None, max_parallel=
                         # Для других ошибок тоже ждем
                         time.sleep(3)
         
-        print(f"🏁 Пачка {i//max_parallel + 1} завершена. Обработано групп: {len([f for f in downloaded_files if f])}")
+        print(f"🏁 Пачка {i//current_max_parallel + 1} завершена. Обработано групп: {len([f for f in downloaded_files if f])}")
     
     return downloaded_files
 
