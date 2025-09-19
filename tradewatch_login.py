@@ -69,7 +69,7 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=5)
     for attempt in range(max_retries):
         try:
             # Добавляем случайную задержку для избежания одновременного доступа
-            time.sleep(random.uniform(0.5, 2.0))
+            time.sleep(random.uniform(1.0, 3.0))  # Увеличена задержка для 2 браузеров
             
             with driver_creation_lock:
                 print(f"🔒 Попытка {attempt + 1}/{max_retries}: Создание Chrome драйвера...")
@@ -78,6 +78,11 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=5)
                 try:
                     import subprocess
                     subprocess.run(["pkill", "-9", "chrome"], capture_output=True, check=False)
+                    subprocess.run(["pkill", "-9", "chromedriver"], capture_output=True, check=False)
+                    subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True, check=False)
+                    time.sleep(2)  # Даем время на завершение процессов
+                except Exception:
+                    pass  # Игнорируем ошибки очистки процессов
                     subprocess.run(["pkill", "-9", "chromedriver"], capture_output=True, check=False)
                     time.sleep(1)  # Даем время процессам завершиться
                 except:
@@ -127,6 +132,22 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=5)
                 options.add_argument("--disable-renderer-backgrounding")
                 options.add_argument("--disable-features=VizDisplayCompositor,VizHitTestSurfaceLayer")
                 options.add_argument("--single-process")  # Для Railway - один процесс для экономии ресурсов
+                
+                # Критические опции для стабильности с 2 браузерами
+                options.add_argument("--disable-dev-tools")
+                options.add_argument("--disable-webgl")
+                options.add_argument("--disable-accelerated-video-decode")
+                options.add_argument("--disable-accelerated-video-encode")
+                options.add_argument("--disable-gpu-compositing")
+                options.add_argument("--disable-software-rasterizer")
+                options.add_argument("--no-zygote")
+                options.add_argument("--disable-background-media-download")
+                options.add_argument("--disable-features=TranslateUI")
+                options.add_argument("--disable-features=BlinkGenPropertyTrees")
+                options.add_argument("--js-flags=--max_old_space_size=1024")
+                options.add_argument("--memory-reducer")
+                options.add_argument("--max-tiles-for-interest-area=512")
+                options.add_argument("--num-raster-threads=1")  # Ограничение потоков для стабильности
                 
                 # Настройка загрузки файлов
                 if download_dir:
@@ -182,8 +203,8 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=5)
                     pass
             
             if attempt < max_retries - 1:
-                delay = (attempt + 1) * 3 + random.uniform(0, 2)  # Увеличенная задержка для версионных конфликтов
-                print(f"⏳ Ждем {delay:.1f} секунд перед следующей попыткой...")
+                delay = (attempt + 1) * 5 + random.uniform(2, 5)  # Увеличенная задержка для 2 браузеров
+                print(f"⏳ Ждем {delay:.1f} секунд перед следующей попыткой (2 браузера)...")
                 time.sleep(delay)
             else:
                 print(f"💥 Все {max_retries} попыток исчерпаны!")
@@ -2931,11 +2952,18 @@ def process_batches_independent(batches, download_dir, headless=None, max_parall
         # Получаем разрешение на запуск браузера
         semaphore.acquire()
         try:
-            # Добавляем задержку между запуском браузеров для стабильности в Railway
+            # Добавляем агрессивную задержку между запуском браузеров для стабильности в Railway
             if batch_number > 1:
-                delay = min(3 + (batch_number - 1) * 2, 15)  # Прогрессивная задержка до 15 сек
-                print(f"⏳ БРАУЗЕР {batch_number}: Ждем {delay} сек перед запуском для стабильности...")
+                base_delay = 8  # Увеличили базовую задержку
+                progressive_delay = (batch_number - 1) * 5  # Увеличили прогрессивную задержку
+                delay = min(base_delay + progressive_delay, 30)  # Максимум 30 секунд
+                print(f"⏳ БРАУЗЕР {batch_number}: Ждем {delay} сек перед запуском для стабильности (2 браузера)...")
                 time.sleep(delay)
+            
+            # Дополнительная проверка ресурсов перед запуском браузера
+            if max_parallel >= 2:
+                print(f"🔍 БРАУЗЕР {batch_number}: Проверяем доступные ресурсы...")
+                time.sleep(2)  # Даем время на освобождение ресурсов от предыдущего браузера
             
             print(f"🔥 НЕЗАВИСИМЫЙ БРАУЗЕР {batch_number}: Запуск автономной обработки группы {batch_number}")
             
