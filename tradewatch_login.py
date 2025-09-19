@@ -53,101 +53,282 @@ def find_generuj_button_safely(driver, wait):
     
     print("🚨 КРИТИЧЕСКАЯ ОШИБКА: Кнопка 'Generuj' не найдена ни одним из селекторов!")
 
+def aggressive_chrome_cleanup():
+    """
+    АГРЕССИВНАЯ ОЧИСТКА Chrome процессов для Railway среды
+    Выполняет многоуровневую очистку всех Chrome-related процессов
+    """
+    print("🚨 АГРЕССИВНАЯ ОЧИСТКА Chrome ПРОЦЕССОВ...")
+
+    try:
+        import subprocess
+        import psutil
+
+        # УРОВЕНЬ 1: Принудительное убийство всех Chrome процессов
+        print("Уровень 1: Убиваем все Chrome процессы...")
+        cleanup_commands = [
+            ["pkill", "-9", "-f", "chrome"],
+            ["pkill", "-9", "-f", "chromium"],
+            ["pkill", "-9", "-f", "chromedriver"],
+            ["pkill", "-9", "-f", "google-chrome"],
+            ["killall", "-9", "chrome"],
+            ["killall", "-9", "chromium-browser"],
+            ["killall", "-9", "chromedriver"]
+        ]
+
+        for cmd in cleanup_commands:
+            try:
+                result = subprocess.run(cmd, capture_output=True, timeout=5)
+                if result.returncode == 0:
+                    print(f"✅ Выполнено: {' '.join(cmd)}")
+            except subprocess.TimeoutExpired:
+                print(f"⏰ Тайм-аут: {' '.join(cmd)}")
+            except Exception as e:
+                print(f"⚠️  Ошибка: {' '.join(cmd)} - {e}")
+
+        # УРОВЕНЬ 2: Очистка через psutil (если доступен)
+        try:
+            chrome_processes = []
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    if proc.info['name'] and ('chrome' in proc.info['name'].lower() or
+                                            'chromium' in proc.info['name'].lower() or
+                                            'chromedriver' in proc.info['name'].lower()):
+                        chrome_processes.append(proc)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+
+            if chrome_processes:
+                print(f"Найдено {len(chrome_processes)} Chrome процессов через psutil")
+                for proc in chrome_processes:
+                    try:
+                        proc.kill()
+                        print(f"Убит процесс: {proc.info['name']} (PID: {proc.info['pid']})")
+                    except Exception as e:
+                        print(f"Не удалось убить процесс {proc.info['pid']}: {e}")
+            else:
+                print("Chrome процессы не найдены через psutil")
+        except ImportError:
+            print("psutil не доступен, пропускаем уровень 2")
+        except Exception as e:
+            print(f"Ошибка уровня 2: {e}")
+
+        # УРОВЕНЬ 3: Очистка временных файлов и сокетов
+        print("Уровень 3: Очистка временных файлов...")
+        temp_cleanup_commands = [
+            ["rm", "-rf", "/tmp/.org.chromium.Chromium.*"],
+            ["rm", "-rf", "/tmp/.com.google.Chrome.*"],
+            ["rm", "-rf", "/tmp/chrome*"],
+            ["rm", "-rf", "/tmp/Chromium*"],
+            ["find", "/tmp", "-name", "*chrome*", "-type", "f", "-delete"],
+            ["find", "/tmp", "-name", "*chromium*", "-type", "f", "-delete"]
+        ]
+
+        for cmd in temp_cleanup_commands:
+            try:
+                result = subprocess.run(cmd, capture_output=True, timeout=3)
+            except:
+                pass
+
+        # УРОВЕНЬ 4: Очистка shared memory
+        print("Уровень 4: Очистка shared memory...")
+        try:
+            result = subprocess.run(["ipcs", "-m"], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if 'chrome' in line.lower() or 'chromium' in line.lower():
+                        parts = line.split()
+                        if len(parts) > 1:
+                            shmid = parts[1]
+                            try:
+                                subprocess.run(["ipcrm", "-m", shmid], capture_output=True, timeout=2)
+                            except:
+                                pass
+        except:
+            pass
+
+        # УРОВЕНЬ 5: Финальная проверка
+        time.sleep(2)  # Даем время процессам завершиться
+        try:
+            result = subprocess.run(["pgrep", "-f", "chrome"], capture_output=True, text=True)
+            remaining = len(result.stdout.strip().split('\n')) if result.stdout.strip() else 0
+            if remaining > 0:
+                print(f"⚠️  Осталось {remaining} Chrome процессов")
+            else:
+                print("✅ Все Chrome процессы успешно очищены")
+        except:
+            print("Не удалось проверить оставшиеся процессы")
+
+    except Exception as e:
+        print(f"❌ Ошибка в aggressive_chrome_cleanup: {e}")
+
+def check_system_resources():
+    """
+    Проверяет системные ресурсы перед запуском браузера
+
+    Returns:
+        dict: информация о ресурсах
+    """
+    resources = {
+        'chrome_processes': 0,
+        'memory_usage': 0,
+        'cpu_usage': 0,
+        'available_memory': 0
+    }
+
+    try:
+        import subprocess
+        import psutil
+
+        # Проверяем количество Chrome процессов
+        try:
+            result = subprocess.run(["pgrep", "-f", "chrome"], capture_output=True, text=True)
+            resources['chrome_processes'] = len(result.stdout.strip().split('\n')) if result.stdout.strip() else 0
+        except:
+            resources['chrome_processes'] = -1
+
+        # Проверяем использование памяти и CPU
+        try:
+            resources['memory_usage'] = psutil.virtual_memory().percent
+            resources['cpu_usage'] = psutil.cpu_percent(interval=1)
+            resources['available_memory'] = psutil.virtual_memory().available / (1024 * 1024 * 1024)  # GB
+        except:
+            pass
+
+    except ImportError:
+        print("psutil не доступен для проверки ресурсов")
+    except Exception as e:
+        print(f"Ошибка проверки ресурсов: {e}")
+
+    return resources
+
 def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=5):
     """
-    Безопасно создает Chrome драйвер с блокировкой для предотвращения конфликтов
-    
+    Безопасно создает Chrome драйвер с расширенной очисткой для Railway среды
+
     Args:
         headless: запуск в headless режиме
         download_dir: папка для загрузки файлов
         max_retries: максимальное количество попыток
-        
+
     Returns:
         webdriver.Chrome: инициализированный драйвер или None при ошибке
     """
-    
+
     for attempt in range(max_retries):
         try:
+            # КРИТИЧЕСКИ ВАЖНО: Проверяем ресурсы перед запуском
+            print(f"🔍 БРАУЗЕР: Проверяем доступные ресурсы...")
+            resources = check_system_resources()
+
+            if resources['chrome_processes'] >= 10:  # Критический порог
+                print(f"🚨 Слишком много Chrome процессов: {resources['chrome_processes']}")
+                print("🧹 Выполняем экстренную очистку...")
+                aggressive_chrome_cleanup()
+                time.sleep(5)  # Даем время на очистку
+
+            if resources['memory_usage'] > 85:  # Критический порог памяти
+                print(f"🚨 Высокое использование памяти: {resources['memory_usage']}%")
+                print("🧹 Выполняем очистку памяти...")
+                aggressive_chrome_cleanup()
+                time.sleep(3)
+
             # Добавляем случайную задержку для избежания одновременного доступа
-            time.sleep(random.uniform(1.0, 3.0))  # Увеличена задержка для 2 браузеров
-            
+            time.sleep(random.uniform(1.0, 3.0))
+
             with driver_creation_lock:
                 print(f"🔒 Попытка {attempt + 1}/{max_retries}: Создание Chrome драйвера...")
-                
-                # КРИТИЧЕСКИ ВАЖНО: Принудительно убиваем висячие Chrome процессы
-                try:
-                    import subprocess
-                    subprocess.run(["pkill", "-9", "chrome"], capture_output=True, check=False)
-                    subprocess.run(["pkill", "-9", "chromedriver"], capture_output=True, check=False)
-                    subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True, check=False)
-                    time.sleep(2)  # Даем время на завершение процессов
-                except Exception:
-                    pass  # Игнорируем ошибки очистки процессов
-                    subprocess.run(["pkill", "-9", "chromedriver"], capture_output=True, check=False)
-                    time.sleep(1)  # Даем время процессам завершиться
-                except:
-                    pass  # Игнорируем ошибки очистки процессов
-                
+
+                # АГРЕССИВНАЯ ОЧИСТКА перед каждым запуском
+                aggressive_chrome_cleanup()
+
                 # Создаем опции Chrome
                 options = webdriver.ChromeOptions()
-                
+
                 if headless:
                     options.add_argument("--headless")
                     options.add_argument("--disable-gpu")
-                
-                # Основные опции для стабильной работы + анти-краш настройки
-                options.add_argument("--no-sandbox")
-                options.add_argument("--disable-dev-shm-usage")
-                options.add_argument("--disable-web-security")
-                options.add_argument("--disable-features=VizDisplayCompositor")
-                options.add_argument("--window-size=1920,1080")
-                options.add_argument("--disable-logging")
-                options.add_argument("--disable-extensions")
-                options.add_argument("--disable-crash-reporter")
-                options.add_argument("--disable-in-process-stack-traces")
-                options.add_argument("--silent")
-                options.add_argument("--log-level=3")  # Минимальный уровень логирования
-                options.add_argument("--disable-background-timer-throttling")
-                options.add_argument("--disable-backgrounding-occluded-windows")
-                options.add_argument("--disable-renderer-backgrounding")
-                
-                # Дополнительные опции для экономии ресурсов в облачной среде
-                options.add_argument("--memory-pressure-off")
-                options.add_argument("--max_old_space_size=4096")
-                options.add_argument("--no-first-run")
-                options.add_argument("--no-default-browser-check")
-                options.add_argument("--disable-background-networking")
-                options.add_argument("--disable-sync")
-                options.add_argument("--disable-translate")
-                options.add_argument("--hide-scrollbars")
-                options.add_argument("--mute-audio")
-                options.add_argument("--disable-client-side-phishing-detection")
-                options.add_argument("--disable-default-apps")
-                options.add_argument("--disable-hang-monitor")
-                options.add_argument("--disable-prompt-on-repost")
-                options.add_argument("--disable-domain-reliability")
-                options.add_argument("--disable-component-extensions-with-background-pages")
-                options.add_argument("--disable-ipc-flooding-protection")
-                options.add_argument("--disable-background-timer-throttling")
-                options.add_argument("--disable-renderer-backgrounding")
-                options.add_argument("--disable-features=VizDisplayCompositor,VizHitTestSurfaceLayer")
-                options.add_argument("--single-process")  # Для Railway - один процесс для экономии ресурсов
-                
-                # Критические опции для стабильности с 2 браузерами
-                options.add_argument("--disable-dev-tools")
-                options.add_argument("--disable-webgl")
-                options.add_argument("--disable-accelerated-video-decode")
-                options.add_argument("--disable-accelerated-video-encode")
-                options.add_argument("--disable-gpu-compositing")
-                options.add_argument("--disable-software-rasterizer")
-                options.add_argument("--no-zygote")
-                options.add_argument("--disable-background-media-download")
-                options.add_argument("--disable-features=TranslateUI")
-                options.add_argument("--disable-features=BlinkGenPropertyTrees")
-                options.add_argument("--js-flags=--max_old_space_size=1024")
-                options.add_argument("--memory-reducer")
-                options.add_argument("--max-tiles-for-interest-area=512")
-                options.add_argument("--num-raster-threads=1")  # Ограничение потоков для стабильности
+
+                # Railway-специфичные оптимизации для контейнерной среды
+                options.add_argument("--disable-dev-shm-usage")  # Использовать диск вместо shared memory
+                options.add_argument("--disable-ipc-flooding-protection")  # Отключить защиту от IPC flooding
+                options.add_argument("--disable-background-timer-throttling")  # Отключить throttling background timers
+                options.add_argument("--disable-low-end-device-mode")  # Отключить режим низкопроизводительного устройства
+                options.add_argument("--disable-new-profile-management")  # Отключить новый менеджер профилей
+                options.add_argument("--disable-offline-auto-reload")  # Отключить авто-перезагрузку offline
+                options.add_argument("--disable-offline-auto-reload-visible-only")  # Отключить авто-перезагрузку только видимых
+                options.add_argument("--disable-session-crashed-bubble")  # Отключить bubble о crashed session
+                options.add_argument("--disable-infobars")  # Отключить infobars
+                options.add_argument("--disable-notifications")  # Отключить notifications
+                options.add_argument("--disable-permissions-api")  # Отключить permissions API
+                options.add_argument("--disable-session-storage")  # Отключить session storage
+                options.add_argument("--disable-web-security")  # Отключить web security для локальной работы
+                options.add_argument("--disable-features=VizDisplayCompositor")  # Отключить Viz display compositor
+                options.add_argument("--disable-features=VizHitTestSurfaceLayer")  # Отключить Viz hit test surface layer
+                options.add_argument("--disable-features=TranslateUI")  # Отключить Translate UI
+                options.add_argument("--disable-features=BlinkGenPropertyTrees")  # Отключить Blink gen property trees
+                options.add_argument("--disable-features=UserMediaScreenCapturing")  # Отключить screen capturing
+                options.add_argument("--disable-blink-features=IdleDetection")  # Отключить idle detection
+                options.add_argument("--disable-blink-features=WebOTP")  # Отключить WebOTP
+                options.add_argument("--no-default-browser-check")  # Не проверять default browser
+                options.add_argument("--no-first-run")  # Пропустить first run
+                options.add_argument("--disable-component-update")  # Отключить component updates
+                options.add_argument("--disable-domain-reliability")  # Отключить domain reliability
+                options.add_argument("--disable-client-side-phishing-detection")  # Отключить phishing detection
+                options.add_argument("--disable-background-networking")  # Отключить background networking
+                options.add_argument("--disable-breakpad")  # Отключить breakpad
+                options.add_argument("--disable-component-extensions-with-background-pages")  # Отключить component extensions
+                options.add_argument("--disable-default-apps")  # Отключить default apps
+                options.add_argument("--disable-hang-monitor")  # Отключить hang monitor
+                options.add_argument("--disable-prompt-on-repost")  # Отключить prompt on repost
+                options.add_argument("--disable-sync")  # Отключить sync
+                options.add_argument("--disable-translate")  # Отключить translate
+                options.add_argument("--hide-scrollbars")  # Скрыть scrollbars
+                options.add_argument("--metrics-recording-only")  # Только recording metrics
+                options.add_argument("--mute-audio")  # Отключить звук
+                options.add_argument("--no-crash-upload")  # Не загружать crash reports
+                options.add_argument("--disable-logging")  # Отключить logging
+                options.add_argument("--disable-dev-tools")  # Отключить dev tools
+                options.add_argument("--disable-extensions")  # Отключить extensions
+                options.add_argument("--disable-plugins")  # Отключить plugins
+                options.add_argument("--disable-images")  # Отключить загрузку изображений для скорости
+                options.add_argument("--disable-javascript")  # Отключить JavaScript если не нужен
+                options.add_argument("--disable-webgl")  # Отключить WebGL
+                options.add_argument("--disable-accelerated-video-decode")  # Отключить accelerated video decode
+                options.add_argument("--disable-accelerated-video-encode")  # Отключить accelerated video encode
+                options.add_argument("--disable-gpu-compositing")  # Отключить GPU compositing
+                options.add_argument("--disable-software-rasterizer")  # Отключить software rasterizer
+                options.add_argument("--no-zygote")  # Отключить zygote process
+                options.add_argument("--single-process")  # Один процесс для экономии ресурсов
+                options.add_argument("--memory-reducer")  # Включить memory reducer
+                options.add_argument("--max-tiles-for-interest-area=512")  # Ограничить tiles
+                options.add_argument("--num-raster-threads=1")  # Один raster thread
+                options.add_argument("--max_old_space_size=1024")  # Ограничить heap size
+                options.add_argument("--js-flags=--max_old_space_size=1024")  # JS heap limit
+                options.add_argument("--memory-pressure-off")  # Отключить memory pressure handling
+                options.add_argument("--disable-background-media-download")  # Отключить background media download
+                options.add_argument("--disable-renderer-backgrounding")  # Отключить renderer backgrounding
+                options.add_argument("--disable-backgrounding-occluded-windows")  # Отключить backgrounding occluded windows
+                options.add_argument("--disable-features=UserActivationPostMessageTransfer")  # Отключить user activation post message transfer
+                options.add_argument("--disable-features=UserActivationSameOriginVisibility")  # Отключить user activation same origin visibility
+
+                # Railway-специфичные переменные окружения
+                options.add_argument("--user-data-dir=/tmp/chrome_user_data")  # Временная директория для профиля
+                options.add_argument("--data-path=/tmp/chrome_data")  # Путь к данным
+                options.add_argument("--disk-cache-dir=/tmp/chrome_cache")  # Кэш на диск
+                options.add_argument("--remote-debugging-port=0")  # Отключить remote debugging
+                options.add_argument("--remote-debugging-address=127.0.0.1")  # Локальный remote debugging
+
+                # Дополнительные Railway оптимизации
+                options.add_argument("--aggressive-cache-discard")  # Агрессивное удаление кэша
+                options.add_argument("--disable-cache")  # Отключить кэш полностью
+                options.add_argument("--disable-application-cache")  # Отключить application cache
+                options.add_argument("--disable-offline-load-stale-cache")  # Отключить offline load stale cache
+                options.add_argument("--disable-preconnect")  # Отключить preconnect
+                options.add_argument("--disable-prefetch")  # Отключить prefetch
+                options.add_argument("--disable-component-update")  # Отключить component update
+                options.add_argument("--disable-background-sync")  # Отключить background sync
+                options.add_argument("--disable-ipc-flooding-protection")  # Отключить IPC flooding protection
                 
                 # Настройка загрузки файлов
                 if download_dir:
@@ -1709,42 +1890,54 @@ def login_to_tradewatch():
 def process_multiple_batches_parallel(main_driver, ean_groups, download_dir, max_parallel=None):
     """
     Обрабатывает несколько групп EAN кодов параллельно в отдельных браузерах
-    
+    с адаптивным управлением ресурсами
+
     Args:
         main_driver: основной веб-драйвер (не используется, но нужен для совместимости)
         ean_groups: список групп EAN кодов
         download_dir: папка для скачивания файлов
-        max_parallel: максимальное количество параллельных браузеров или None (использовать config)
-    
+        max_parallel: максимальное количество параллельных браузеров или None (адаптивный режим)
+
     Returns:
         list: список путей к скачанным файлам
     """
     # Используем конфигурацию если max_parallel не указан
     if max_parallel is None:
         max_parallel = config.MAX_PARALLEL_BROWSERS
-    
+
+    # Проверяем ресурсы для принятия решения об адаптивном режиме
+    resources = check_system_resources()
+
+    # Если ресурсы ограничены, используем адаптивный режим
+    if (resources['chrome_processes'] > 5 or
+        resources['memory_usage'] > 50 or
+        resources['available_memory'] < 2.0):
+
+        print("🔄 Обнаружены ограничения ресурсов, переключаемся в адаптивный режим")
+        return process_multiple_batches_adaptive(ean_groups, download_dir, max_parallel)
+
     results = []
-    
+
     # Обрабатываем группы по max_parallel штук
     for i in range(0, len(ean_groups), max_parallel):
         batch_to_process = ean_groups[i:i + max_parallel]
-        
+
         print(f"Обрабатываем параллельно группы {i+1}-{min(i+max_parallel, len(ean_groups))}")
-        
+
         # Используем потоки для параллельной обработки с отдельными браузерами
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
             futures = []
-            
+
             for j, group in enumerate(batch_to_process):
                 batch_number = i + j + 1
                 future = executor.submit(
-                    process_batch_in_separate_browser, 
-                    group, 
-                    download_dir, 
+                    process_batch_in_separate_browser,
+                    group,
+                    download_dir,
                     batch_number
                 )
                 futures.append(future)
-            
+
             # Собираем результаты
             for future in concurrent.futures.as_completed(futures):
                 try:
@@ -1753,11 +1946,113 @@ def process_multiple_batches_parallel(main_driver, ean_groups, download_dir, max
                         results.append(result)
                 except Exception as e:
                     print(f"Ошибка при обработке группы: {e}")
-        
+
         if i + max_parallel < len(ean_groups):
             print("Пауза между пакетами групп...")
             time.sleep(3)
-    
+
+    return results
+
+def get_adaptive_max_parallel():
+    """
+    Адаптивно определяет максимальное количество параллельных браузеров
+    на основе доступных ресурсов системы
+
+    Returns:
+        int: рекомендуемое количество параллельных браузеров
+    """
+    try:
+        resources = check_system_resources()
+
+        # Базовое значение из конфигурации
+        base_max = config.MAX_PARALLEL_BROWSERS
+
+        # Корректировка на основе ресурсов
+        if resources['chrome_processes'] > 20:
+            print(f"🚨 Много Chrome процессов ({resources['chrome_processes']}), снижаем до 1")
+            return 1
+        elif resources['chrome_processes'] > 10:
+            print(f"⚠️  Достаточно Chrome процессов ({resources['chrome_processes']}), снижаем до 1")
+            return 1
+        elif resources['memory_usage'] > 80:
+            print(f"🚨 Высокое использование памяти ({resources['memory_usage']}%), снижаем до 1")
+            return 1
+        elif resources['memory_usage'] > 60:
+            print(f"⚠️  Среднее использование памяти ({resources['memory_usage']}%), снижаем до 1")
+            return 1
+        elif resources['available_memory'] < 1.0:  # Менее 1GB
+            print(f"🚨 Мало доступной памяти ({resources['available_memory']:.1f}GB), снижаем до 1")
+            return 1
+        elif resources['cpu_usage'] > 70:
+            print(f"⚠️  Высокая загрузка CPU ({resources['cpu_usage']}%), снижаем до 1")
+            return 1
+        else:
+            print(f"✅ Ресурсы в норме, используем {base_max} браузеров параллельно")
+            return base_max
+
+    except Exception as e:
+        print(f"❌ Ошибка проверки ресурсов, используем {config.MAX_PARALLEL_BROWSERS}: {e}")
+        return config.MAX_PARALLEL_BROWSERS
+
+def process_multiple_batches_adaptive(ean_groups, download_dir, max_parallel=None):
+    """
+    Обрабатывает группы EAN кодов с адаптивным управлением параллелизмом
+
+    Args:
+        ean_groups: список групп EAN кодов
+        download_dir: папка для скачивания файлов
+        max_parallel: максимальное количество параллельных браузеров или None (адаптивный режим)
+
+    Returns:
+        list: список путей к скачанным файлам
+    """
+    results = []
+    total_groups = len(ean_groups)
+
+    # Обрабатываем группы по адаптивному количеству
+    i = 0
+    while i < total_groups:
+        # Определяем адаптивное количество браузеров для текущего батча
+        if max_parallel is None:
+            current_max_parallel = get_adaptive_max_parallel()
+        else:
+            current_max_parallel = max_parallel
+
+        # Корректируем размер батча если остались только несколько групп
+        batch_size = min(current_max_parallel, total_groups - i)
+        batch_to_process = ean_groups[i:i + batch_size]
+
+        print(f"🔄 Обрабатываем группы {i+1}-{i+batch_size} из {total_groups} (адаптивно: {current_max_parallel} браузеров)")
+
+        # Используем потоки для параллельной обработки
+        with concurrent.futures.ThreadPoolExecutor(max_workers=batch_size) as executor:
+            futures = []
+
+            for j, group in enumerate(batch_to_process):
+                batch_number = i + j + 1
+                future = executor.submit(
+                    process_batch_in_separate_browser,
+                    group,
+                    download_dir,
+                    batch_number
+                )
+                futures.append(future)
+
+            # Собираем результаты
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    result = future.result()
+                    if result:
+                        results.append(result)
+                except Exception as e:
+                    print(f"❌ Ошибка в обработке батча: {e}")
+
+        i += batch_size
+
+        # Небольшая пауза между батчами для стабилизации
+        if i < total_groups:
+            time.sleep(2)
+
     return results
 
 
