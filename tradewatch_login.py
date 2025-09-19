@@ -25,6 +25,10 @@ import signal
 # Глобальная блокировка для создания драйверов
 driver_creation_lock = threading.Lock()
 
+# Глобальный реестр активных драйверов и их процессов
+active_drivers = {}
+driver_lock = threading.Lock()
+
 def save_processing_checkpoint(checkpoint_data, checkpoint_file='processing_checkpoint.json'):
     """
     Сохраняет чекпоинт обработки для возможности возобновления
@@ -189,11 +193,11 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
     
     for attempt in range(max_retries):
         try:
-            # Экспоненциальная задержка с jitter для избежания одновременного доступа
-            base_delay = 2 ** attempt  # 1, 2, 4 секунды
+            # Увеличенная экспоненциальная задержка для избежания одновременного старта
+            base_delay = 5 + (3 ** attempt)  # 8, 14, 32 секунды
             jitter = random.uniform(0.5, 1.5)
             delay = base_delay * jitter
-            print(f"⏳ Задержка перед попыткой {attempt + 1}: {delay:.1f} сек")
+            print(f"⏳ Увеличенная задержка перед попыткой {attempt + 1}: {delay:.1f} сек")
             time.sleep(delay)
             
             with driver_creation_lock:
@@ -242,24 +246,6 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                         except Exception as emergency_error:
                             print(f"   ⚠️  Ошибка экстренной очистки: {emergency_error}")
                     
-                    # КРИТИЧЕСКАЯ ЗАЩИТА: ОСТАНОВКА СИСТЕМЫ ПРИ >100 ПРОЦЕССАХ
-                    if len(chrome_processes) > 100:
-                        print(f"   🚨 КАТАСТРОФА! {len(chrome_processes)} Chrome процессов!")
-                        print("   💀 АВАРИЙНАЯ ОСТАНОВКА СИСТЕМЫ...")
-                        try:
-                            # Убиваем все процессы с максимальной силой
-                            subprocess.run(["killall", "-9", "-f", "chrome"], capture_output=True, check=False)
-                            subprocess.run(["killall", "-9", "-f", "chromium"], capture_output=True, check=False)
-                            subprocess.run(["killall", "-9", "-f", "chromedriver"], capture_output=True, check=False)
-                            subprocess.run(["pkill", "-9", "-f", "python"], capture_output=True, check=False)
-                            print("   💀 Система принудительно остановлена из-за переполнения процессов")
-                            print("   🔄 Перезапустите приложение после очистки")
-                            # Выходим из функции с ошибкой
-                            raise RuntimeError(f"Катастрофическое переполнение процессов: {len(chrome_processes)}")
-                        except Exception as critical_error:
-                            print(f"   ⚠️  Ошибка аварийной остановки: {critical_error}")
-                            raise critical_error
-                    
                 except Exception as diag_error:
                     print(f"   ⚠️  Ошибка диагностики: {diag_error}")
                 
@@ -295,87 +281,49 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                 if not chrome_available or not chromedriver_available:
                     print("   🚨 Chrome или ChromeDriver недоступны! Попытка использовать ChromeDriverManager...")
                 
-                # СУПЕР-АГРЕССИВНАЯ ОЧИСТКА: Принудительно убиваем ВСЕ висячие процессы
+                # ТОЧЕЧНАЯ ОЧИСТКА: убиваем только старые/висячие процессы (НЕ активные драйверы)
                 try:
-                    print("🔥 СУПЕР-АГРЕССИВНАЯ ОЧИСТКА ПРОЦЕССОВ...")
-
-                    # 1. Проверяем количество Chrome процессов ДО очистки
-                    chrome_count_before = 0
+                    print("🧹 ТОЧЕЧНАЯ ОЧИСТКА ВИСЯЧИХ ПРОЦЕССОВ...")
+                    
+                    # Получаем список всех активных драйверов
+                    with driver_lock:
+                        active_pids = set()
+                        for driver_info in active_drivers.values():
+                            active_pids.update(driver_info.get('pids', []))
+                    
+                    # Ищем висячие Chrome процессы (исключая активные)
+                    orphaned_pids = []
                     try:
-                        result = subprocess.run(["pgrep", "-f", "chrome"], capture_output=True, text=True)
-                        if result.stdout.strip():
-                            chrome_count_before = len(result.stdout.strip().split('\n'))
-                        print(f"   📊 Chrome процессов до очистки: {chrome_count_before}")
+                        for proc in psutil.process_iter(['pid', 'name']):
+                            if 'chrome' in proc.info['name'].lower() and proc.info['pid'] not in active_pids:
+                                orphaned_pids.append(proc.info['pid'])
                     except:
                         pass
-
-                    # 2. Убиваем все Chrome процессы разными способами
-                    subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True, check=False)
-                    subprocess.run(["pkill", "-9", "-f", "chromium"], capture_output=True, check=False)
-                    subprocess.run(["pkill", "-9", "-f", "chromedriver"], capture_output=True, check=False)
-                    subprocess.run(["pkill", "-9", "chrome"], capture_output=True, check=False)
-                    subprocess.run(["pkill", "-9", "chromium"], capture_output=True, check=False)
-                    subprocess.run(["pkill", "-9", "chromedriver"], capture_output=True, check=False)
-
-                    # 3. Убиваем процессы на всех возможных портах WebDriver
-                    for port in [9515, 9222, 9223, 9224, 9225]:
+                    
+                    print(f"   � Найдено висячих Chrome процессов: {len(orphaned_pids)}")
+                    print(f"   🔒 Активных драйверов защищено: {len(active_pids)}")
+                    
+                    # Убиваем только висячие процессы
+                    for pid in orphaned_pids:
                         try:
-                            result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True, check=False)
-                            if result.stdout.strip():
-                                for pid in result.stdout.strip().split('\n'):
-                                    if pid:
-                                        try:
-                                            os.kill(int(pid), signal.SIGKILL)
-                                            print(f"   💀 Убит процесс {pid} на порту {port}")
-                                        except:
-                                            pass
+                            os.kill(pid, signal.SIGKILL)
+                            print(f"   💀 Убит висячий процесс {pid}")
                         except:
                             pass
-
-                    # 4. Дополнительная очистка через ps и kill
-                    try:
-                        # Находим все процессы chrome/chromium
-                        result = subprocess.run(["ps", "aux"], capture_output=True, text=True)
-                        if result.stdout:
-                            for line in result.stdout.split('\n'):
-                                if 'chrome' in line.lower() or 'chromium' in line.lower():
-                                    try:
-                                        pid = line.split()[1]
-                                        os.kill(int(pid), signal.SIGKILL)
-                                        print(f"   💀 Дополнительно убит процесс {pid}")
-                                    except:
-                                        pass
-                    except:
-                        pass
-
-                    # 5. Ждем завершения процессов (увеличенное время)
-                    time.sleep(3)
-
-                    # 6. Проверяем результат очистки
-                    chrome_count_after = 0
-                    try:
-                        result = subprocess.run(["pgrep", "-f", "chrome"], capture_output=True, text=True)
-                        if result.stdout.strip():
-                            chrome_count_after = len(result.stdout.strip().split('\n'))
-                        print(f"   📊 Chrome процессов после очистки: {chrome_count_after}")
-                        print(f"   ✅ Убито процессов: {chrome_count_before - chrome_count_after}")
-                    except:
-                        pass
-
-                    # 7. Если все еще много процессов - ПАНИКА!
-                    if chrome_count_after > 10:
-                        print(f"   🚨 КРИТИЧНО! Все еще {chrome_count_after} Chrome процессов!")
-                        print("   💥 ЭКСТРЕННАЯ ОЧИСТКА: перезапуск всех Chrome процессов...")
-                        # Убиваем все процессы chrome с максимальной силой
-                        subprocess.run(["killall", "-9", "chrome"], capture_output=True, check=False)
-                        subprocess.run(["killall", "-9", "chromium"], capture_output=True, check=False)
-                        subprocess.run(["killall", "-9", "chromedriver"], capture_output=True, check=False)
-                        time.sleep(5)
-
-                    print("🧹 Супер-агрессивная очистка процессов выполнена")
+                    
+                    # ЭКСТРЕННАЯ глобальная очистка только если НЕТ активных драйверов и много процессов
+                    total_chrome = len(orphaned_pids) + len(active_pids)
+                    if len(active_pids) == 0 and total_chrome > 100:
+                        print(f"   🚨 ЭКСТРЕННАЯ СИТУАЦИЯ: {total_chrome} процессов без активных драйверов!")
+                        print("   💥 Глобальная очистка разрешена...")
+                        subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True, check=False)
+                        subprocess.run(["pkill", "-9", "-f", "chromedriver"], capture_output=True, check=False)
+                        time.sleep(2)
+                    
+                    print("🧹 Точечная очистка завершена")
 
                 except Exception as e:
-                    print(f"⚠️ Ошибка при очистке процессов: {e}")
+                    print(f"⚠️ Ошибка при точечной очистке: {e}")
                 
                 # ПРОВЕРКА СИСТЕМНЫХ РЕСУРСОВ ПЕРЕД ЗАПУСКОМ
                 print("🔍 ПРОВЕРКА СИСТЕМНЫХ РЕСУРСОВ:")
@@ -424,11 +372,23 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                 # Создаем опции Chrome с Railway-специфичными настройками
                 options = webdriver.ChromeOptions()
                 
+                # ИЗОЛЯЦИЯ ПРОФИЛЯ: создаем уникальную папку для каждого драйвера
+                driver_id = threading.current_thread().ident or random.randint(1000, 9999)
+                temp_profile_dir = f"/tmp/chrome_profile_{driver_id}_{int(time.time())}"
+                temp_cache_dir = f"/tmp/chrome_cache_{driver_id}_{int(time.time())}"
+                os.makedirs(temp_profile_dir, exist_ok=True)
+                os.makedirs(temp_cache_dir, exist_ok=True)
+                
+                options.add_argument(f"--user-data-dir={temp_profile_dir}")
+                options.add_argument(f"--data-path={temp_cache_dir}")
+                options.add_argument(f"--disk-cache-dir={temp_cache_dir}/cache")
+                print(f"   🔒 Изолированный профиль: {temp_profile_dir}")
+                
                 if headless:
-                    options.add_argument("--headless")
+                    options.add_argument("--headless=new")  # Новый headless режим для Chrome 120+
                     options.add_argument("--disable-gpu")
                 
-                # ОСНОВНЫЕ ОПЦИИ ДЛЯ RAILWAY КОНТЕЙНЕРА
+                # ОСНОВНЫЕ ОПЦИИ ДЛЯ RAILWAY КОНТЕЙНЕРА (без --single-process)
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-dev-shm-usage")
                 options.add_argument("--disable-web-security")
@@ -444,7 +404,7 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                 options.add_argument("--disable-backgrounding-occluded-windows")
                 options.add_argument("--disable-renderer-backgrounding")
                 
-                # ДОПОЛНИТЕЛЬНЫЕ НАСТРОЙКИ ДЛЯ RAILWAY
+                # ДОПОЛНИТЕЛЬНЫЕ НАСТРОЙКИ ДЛЯ RAILWAY (улучшенная стабильность)
                 options.add_argument("--disable-software-rasterizer")
                 options.add_argument("--disable-background-networking")
                 options.add_argument("--disable-default-apps")
@@ -455,7 +415,7 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                 options.add_argument("--mute-audio")
                 options.add_argument("--no-first-run")
                 options.add_argument("--safebrowsing-disable-auto-update")
-                options.add_argument("--single-process")  # Важно для контейнеров
+                # УБРАЛИ --single-process для улучшения стабильности
                 
                 # ОГРАНИЧЕНИЯ РЕСУРСОВ ДЛЯ КОНТЕЙНЕРА
                 options.add_argument("--max_old_space_size=512")  # Ограничение памяти JavaScript
@@ -480,59 +440,40 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                     }
                     options.add_experimental_option("prefs", prefs)
                 
-                # ПРОВЕРКА ДОСТУПНОСТИ ПОРТА WEBDRIVER
-                print("🔍 ПРОВЕРКА ПОРТА WEBDRIVER:")
-                port_available = False
+                # АВТОМАТИЧЕСКИЙ ВЫБОР ПОРТА: позволяем Service выбрать свободный порт
+                print("🔍 НАСТРОЙКА АВТОПОРТА WEBDRIVER:")
+                print("   ✅ Используем автоматический выбор порта (Service выберет свободный)")
                 
+                # Попытка использования системного ChromeDriver
                 try:
-                    import socket
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(1)
-                    result = sock.connect_ex(('127.0.0.1', 9515))
-                    sock.close()
-                    
-                    if result == 0:
-                        print("   ❌ Порт 9515 занят! Попытка освободить...")
-                        # Пытаемся убить процесс на порту
-                        try:
-                            result = subprocess.run(["lsof", "-ti:9515"], capture_output=True, text=True, check=False)
-                            if result.stdout.strip():
-                                for pid in result.stdout.strip().split('\n'):
-                                    if pid:
-                                        os.kill(int(pid), signal.SIGKILL)
-                                        print(f"   💀 Убит процесс {pid} на порту 9515")
-                                time.sleep(2)  # Ждем завершения
-                                
-                                # Повторная проверка
-                                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                                sock.settimeout(1)
-                                result = sock.connect_ex(('127.0.0.1', 9515))
-                                sock.close()
-                                
-                                if result != 0:
-                                    port_available = True
-                                    print("   ✅ Порт 9515 освобожден")
-                                else:
-                                    print("   ❌ Порт 9515 все еще занят")
-                            else:
-                                print("   ⚠️  lsof не нашел процессов на порту 9515")
-                        except Exception as port_kill_error:
-                            print(f"   ⚠️  Ошибка освобождения порта: {port_kill_error}")
-                    else:
-                        port_available = True
-                        print("   ✅ Порт 9515 свободен")
-                        
-                except Exception as port_check_error:
-                    print(f"   ⚠️  Ошибка проверки порта: {port_check_error}")
-                    port_available = True  # Предполагаем, что порт доступен
-                
-                # Пытаемся использовать системный Chrome
-                try:
-                    options.binary_location = "/usr/bin/google-chrome"
+                    print("🔧 Попытка использования системного ChromeDriver...")
                     service = Service(executable_path="/usr/bin/chromedriver")
-                    print("🚀 Запуск Chrome с системными бинарными файлами...")
+                    
                     driver = webdriver.Chrome(service=service, options=options)
-                    print("✅ Используем системный Chrome с предустановленным ChromeDriver")
+                    
+                    # Регистрируем драйвер и отслеживаем его процессы
+                    driver_pids = []
+                    try:
+                        # Получаем PID ChromeDriver service
+                        if hasattr(service, 'process') and service.process:
+                            driver_pids.append(service.process.pid)
+                        
+                        # Ищем дочерние Chrome процессы
+                        for proc in psutil.process_iter(['pid', 'ppid', 'name']):
+                            if 'chrome' in proc.info['name'].lower():
+                                driver_pids.append(proc.info['pid'])
+                    except:
+                        pass
+                    
+                    with driver_lock:
+                        active_drivers[id(driver)] = {
+                            'pids': driver_pids,
+                            'profile_dir': temp_profile_dir,
+                            'cache_dir': temp_cache_dir,
+                            'created_at': time.time()
+                        }
+                    
+                    print(f"✅ Системный ChromeDriver создан, отслеживаем {len(driver_pids)} процессов")
                     return driver
                 except Exception as e:
                     error_msg = str(e)
@@ -543,18 +484,6 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                         print("🔍 АНАЛИЗ ОШИБКИ ПОДКЛЮЧЕНИЯ:")
                         print("   - ChromeDriver не может подключиться к Chrome")
                         print("   - Возможные причины: порт занят, Chrome не запустился, ресурсы исчерпаны")
-                        
-                        # Проверяем, не остался ли Chrome процесс
-                        try:
-                            result = subprocess.run(["pgrep", "-f", "chrome"], capture_output=True, text=True)
-                            if result.stdout.strip():
-                                print(f"   - Найдены висячие Chrome процессы: {result.stdout.strip()}")
-                                subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True)
-                                print("   - Висячие процессы убиты")
-                            else:
-                                print("   - Висячих Chrome процессов не найдено")
-                        except Exception as pgrep_error:
-                            print(f"   - Ошибка проверки процессов: {pgrep_error}")
                             
                     elif "version" in error_msg.lower():
                         print("🔍 АНАЛИЗ ВЕРСИОННОЙ ОШИБКИ:")
@@ -566,12 +495,35 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                         print("   - Chrome не может создать сессию")
                         print("   - Возможные причины: недостаточно памяти, поврежденные настройки")
                     
-                    # Используем ChromeDriverManager как fallback с улучшенной обработкой
+                    # Используем ChromeDriverManager как fallback
                     try:
-                        print("🔄 Попытка с ChromeDriverManager...")
+                        print("🔧 Попытка через ChromeDriverManager...")
                         service = Service(ChromeDriverManager().install())
                         driver = webdriver.Chrome(service=service, options=options)
-                        print("✅ Используем ChromeDriverManager (автоматическое совпадение версий)")
+                        
+                        # Регистрируем драйвер и отслеживаем его процессы
+                        driver_pids = []
+                        try:
+                            # Получаем PID ChromeDriver service
+                            if hasattr(service, 'process') and service.process:
+                                driver_pids.append(service.process.pid)
+                            
+                            # Ищем дочерние Chrome процессы
+                            for proc in psutil.process_iter(['pid', 'ppid', 'name']):
+                                if 'chrome' in proc.info['name'].lower():
+                                    driver_pids.append(proc.info['pid'])
+                        except:
+                            pass
+                        
+                        with driver_lock:
+                            active_drivers[id(driver)] = {
+                                'pids': driver_pids,
+                                'profile_dir': temp_profile_dir,
+                                'cache_dir': temp_cache_dir,
+                                'created_at': time.time()
+                            }
+                        
+                        print(f"✅ ChromeDriverManager создал драйвер, отслеживаем {len(driver_pids)} процессов")
                         return driver
                     except Exception as wdm_error:
                         wdm_error_msg = str(wdm_error)
@@ -613,6 +565,59 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                 raise e
     
     return None
+
+def safe_cleanup_driver(driver):
+    """
+    Безопасно закрывает драйвер и очищает только его процессы
+    
+    Args:
+        driver: веб-драйвер для закрытия
+    """
+    if not driver:
+        return
+    
+    driver_id = id(driver)
+    
+    try:
+        print(f"🧹 Безопасное закрытие драйвера {driver_id}...")
+        
+        # Получаем информацию о драйвере
+        driver_info = None
+        with driver_lock:
+            driver_info = active_drivers.get(driver_id)
+        
+        # Закрываем драйвер
+        safe_cleanup_driver(driver)
+        print(f"   ✅ Безопасная очистка выполнена")
+        
+        # Убиваем только процессы этого драйвера
+        if driver_info and 'pids' in driver_info:
+            for pid in driver_info['pids']:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    print(f"   💀 Убит процесс драйвера {pid}")
+                except:
+                    pass
+        
+        # Очищаем временные папки
+        if driver_info:
+            for dir_path in [driver_info.get('profile_dir'), driver_info.get('cache_dir')]:
+                if dir_path and os.path.exists(dir_path):
+                    try:
+                        import shutil
+                        shutil.rmtree(dir_path, ignore_errors=True)
+                        print(f"   🗑️  Удалена временная папка: {dir_path}")
+                    except:
+                        pass
+        
+        # Удаляем из реестра активных драйверов
+        with driver_lock:
+            if driver_id in active_drivers:
+                del active_drivers[driver_id]
+                print(f"   ✅ Драйвер {driver_id} удален из реестра")
+        
+    except Exception as e:
+        print(f"⚠️ Ошибка при закрытии драйвера {driver_id}: {e}")
 
 def safe_get_downloaded_file(downloaded_files, context=""):
     """
@@ -1226,8 +1231,8 @@ def process_ean_codes_batch(ean_codes_batch, download_dir, batch_number=1, headl
         return None
     
     finally:
-        # Закрываем браузер
-        driver.quit()
+        # Безопасно закрываем драйвер
+        safe_cleanup_driver(driver)
 
 
 def process_batch_in_session(driver, ean_codes_batch, download_dir, batch_number):
@@ -1873,9 +1878,9 @@ def process_batch_with_new_browser(ean_codes_batch, download_dir, batch_number, 
         return None
     
     finally:
-        # 🔥 КРИТИЧЕСКИ ВАЖНО: Закрываем браузер после каждой группы
-        print(f"🔒 Закрываем браузер для группы {batch_number}")
-        driver.quit()
+        # 🔥 КРИТИЧЕСКИ ВАЖНО: Безопасно закрываем драйвер после каждой группы
+        print(f"🔒 Безопасно закрываем драйвер для группы {batch_number}")
+        safe_cleanup_driver(driver)
 
 
 def process_supplier_file_with_tradewatch_old_version(supplier_file_path, download_dir, headless=None):
@@ -2091,12 +2096,12 @@ def process_supplier_file_with_tradewatch_old_version(supplier_file_path, downlo
             return downloaded_files
             
         finally:
-            # Закрываем браузер в конце
-            print("🔒 Закрываем браузер...")
+            # Безопасно закрываем драйвер в конце
+            print("🔒 Безопасно закрываем драйвер...")
             try:
-                driver.quit()
+                safe_cleanup_driver(driver)
             except Exception as e:
-                print(f"⚠️ Ошибка при закрытии браузера: {e}")
+                print(f"⚠️ Ошибка при закрытии драйвера: {e}")
             
             # Очистка памяти после закрытия браузера
             try:
@@ -2307,11 +2312,11 @@ def process_batch_in_separate_browser(ean_codes_batch, download_dir, batch_numbe
         print(f"Ошибка при обработке группы {batch_number}: {e}")
         return None
     finally:
-        # Обязательно закрываем браузер
+        # Обязательно безопасно закрываем браузер
         if driver:
             try:
-                driver.quit()
-                print(f"Браузер для группы {batch_number} закрыт")
+                safe_cleanup_driver(driver)
+                print(f"Браузер для группы {batch_number} безопасно закрыт")
             except:
                 pass
 
@@ -3735,20 +3740,6 @@ def process_supplier_file_with_tradewatch_single_browser(supplier_file_path, dow
             if driver:
                 print("🔒 ЗАКРЫВАЕМ БРАУЗЕР ПОСЛЕ ВСЕХ ГРУПП")
                 driver.quit()
-                
-                # 🔥 ПРИНУДИТЕЛЬНАЯ ОЧИСТКА ПРОЦЕССОВ ПОСЛЕ ЗАКРЫТИЯ БРАУЗЕРА
-                print("🧹 ПРИНУДИТЕЛЬНАЯ ОЧИСТКА ПРОЦЕССОВ ПОСЛЕ ЗАКРЫТИЯ БРАУЗЕРА...")
-                try:
-                    # Убиваем все висячие процессы этого браузера
-                    subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True, check=False)
-                    subprocess.run(["pkill", "-9", "-f", "chromedriver"], capture_output=True, check=False)
-                    
-                    # Ждем завершения процессов
-                    time.sleep(1)
-                    
-                    print("✅ Очистка процессов после закрытия браузера выполнена")
-                except Exception as cleanup_error:
-                    print(f"⚠️  Ошибка очистки после закрытия браузера: {cleanup_error}")
 
         print(f"\n🏁 Обработка завершена. Загружено {len(downloaded_files)} файлов из {len(batches)} групп")
 
