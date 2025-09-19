@@ -53,7 +53,7 @@ def find_generuj_button_safely(driver, wait):
     
     print("🚨 КРИТИЧЕСКАЯ ОШИБКА: Кнопка 'Generuj' не найдена ни одним из селекторов!")
 
-def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3):
+def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=5):
     """
     Безопасно создает Chrome драйвер с блокировкой для предотвращения конфликтов
     
@@ -106,6 +106,23 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                 options.add_argument("--disable-backgrounding-occluded-windows")
                 options.add_argument("--disable-renderer-backgrounding")
                 
+                # Дополнительные опции для экономии ресурсов в облачной среде
+                options.add_argument("--memory-pressure-off")
+                options.add_argument("--max_old_space_size=4096")
+                options.add_argument("--no-first-run")
+                options.add_argument("--no-default-browser-check")
+                options.add_argument("--disable-background-networking")
+                options.add_argument("--disable-sync")
+                options.add_argument("--disable-translate")
+                options.add_argument("--hide-scrollbars")
+                options.add_argument("--mute-audio")
+                options.add_argument("--disable-client-side-phishing-detection")
+                options.add_argument("--disable-default-apps")
+                options.add_argument("--disable-hang-monitor")
+                options.add_argument("--disable-prompt-on-repost")
+                options.add_argument("--disable-domain-reliability")
+                options.add_argument("--disable-component-extensions-with-background-pages")
+                
                 # Настройка загрузки файлов
                 if download_dir:
                     prefs = {
@@ -121,6 +138,10 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                     options.binary_location = "/usr/bin/google-chrome"
                     service = Service(executable_path="/usr/bin/chromedriver")
                     driver = webdriver.Chrome(service=service, options=options)
+                    
+                    # Устанавливаем увеличенные тайм-ауты для стабильности
+                    driver.set_page_load_timeout(60)  # Увеличен с 30 до 60 сек
+                    driver.implicitly_wait(15)        # Увеличен с 10 до 15 сек
                     print("✅ Используем системный Chrome с предустановленным ChromeDriver")
                     return driver
                 except Exception as e:
@@ -130,6 +151,11 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                     try:
                         service = Service(ChromeDriverManager().install())
                         driver = webdriver.Chrome(service=service, options=options)
+                        
+                        # Устанавливаем увеличенные тайм-ауты для стабильности
+                        driver.set_page_load_timeout(60)  # Увеличен с 30 до 60 сек
+                        driver.implicitly_wait(15)        # Увеличен с 10 до 15 сек
+                        
                         print("✅ Используем ChromeDriverManager (автоматическое совпадение версий)")
                         return driver
                     except Exception as wdm_error:
@@ -2592,7 +2618,7 @@ def process_batch_in_separate_browser_with_unique_name(ean_codes_batch, download
     print(f"📁 Браузер {batch_number}: Уникальная папка для скачивания: {unique_download_path.absolute()}")
 
     # Создаем драйвер с помощью безопасной функции
-    driver = create_chrome_driver_safely(headless=headless, download_dir=str(unique_download_path.absolute()))
+    driver = create_chrome_driver_safely(headless=headless, download_dir=str(unique_download_path.absolute()), max_retries=5)
     if not driver:
         print(f"❌ Браузер {batch_number}: Не удалось создать драйвер")
         return None
