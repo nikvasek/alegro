@@ -47,5 +47,5 @@ ENV DISPLAY=:99
 # Экспонируем порт
 EXPOSE 8080
 
-# Команда запуска
-CMD ["python", "run_bot.py"]
+# Команда запуска c gunicorn для production
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--timeout", "300", "--worker-class", "sync", "telegram_bot:app"]

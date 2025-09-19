@@ -5,3 +5,5 @@ selenium
 webdriver-manager
 pathlib
 flask
+gunicorn
+psutil

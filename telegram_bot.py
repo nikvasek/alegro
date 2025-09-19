@@ -17,16 +17,24 @@ import pandas as pd
 from merge_excel_with_calculations import process_supplier_with_tradewatch_auto
 from tradewatch_login import process_supplier_file_with_tradewatch
 
-# Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-# Устанавливаем более высокий уровень логирования для httpx и telegram.ext, чтобы избежать спама в консоли
+# Импортируем structured logging
+from structured_logging import setup_structured_logging, get_logger, log_user_activity, log_browser_event
+
+# Настройка structured логирования для production
+if os.getenv('RAILWAY_ENVIRONMENT') or os.getenv('PRODUCTION'):
+    setup_structured_logging()
+    logger = get_logger(__name__)
+else:
+    # Для локальной разработки - обычное логирование
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+    logger = logging.getLogger(__name__)
+
+# Устанавливаем более высокий уровень логирования для httpx и telegram.ext
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext").setLevel(logging.WARNING)
-
-logger = logging.getLogger(__name__)
 
 # Настройка логирования для активности бота
 activity_logger = logging.getLogger("bot_activity")
@@ -68,6 +76,42 @@ def webhook():
 def health():
     """Альтернативный health check endpoint"""
     return {"status": "ok", "bot": "running"}
+
+@app.route('/metrics')
+def metrics():
+    """Metrics endpoint для мониторинга производительности"""
+    import psutil
+    import gc
+    
+    # Сбор метрик системы
+    memory = psutil.virtual_memory()
+    cpu_percent = psutil.cpu_percent()
+    
+    # Сбор метрик Python
+    gc_stats = gc.get_stats()
+    
+    # Базовые метрики
+    metrics_data = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "system": {
+            "memory_total_mb": round(memory.total / 1024 / 1024, 2),
+            "memory_used_mb": round(memory.used / 1024 / 1024, 2),
+            "memory_percent": memory.percent,
+            "cpu_percent": cpu_percent
+        },
+        "python": {
+            "gc_collections": [stat['collections'] for stat in gc_stats],
+            "gc_collected": [stat['collected'] for stat in gc_stats],
+            "gc_uncollectable": [stat['uncollectable'] for stat in gc_stats]
+        },
+        "bot": {
+            "status": "running",
+            "active_processes": len([p for p in psutil.process_iter() if 'chrome' in p.name().lower()]),
+            "temp_files_count": len(list(Path('temp_files').rglob('*'))) if Path('temp_files').exists() else 0
+        }
+    }
+    
+    return metrics_data
 
 # Токен бота (читаем из переменной окружения или используем дефолтный)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7258964094:AAHMvyGG7CbznDZcB34DGv7JoFPk5kA8H08")
@@ -448,8 +492,12 @@ class TelegramBot:
                     )
                     return
 
-                # Логируем информацию о пользователе и файле
-                activity_logger.info(f"User ID: {user_id}, Nickname: {user_name}, Username: {telegram_username}, EAN Count: {ean_count}, File: {file.file_name}")
+                # Логируем информацию о пользователе и файле с structured logging
+                if os.getenv('RAILWAY_ENVIRONMENT') or os.getenv('PRODUCTION'):
+                    log_user_activity(activity_logger, str(user_id), telegram_username, 
+                                    user_name, ean_count, file.file_name)
+                else:
+                    activity_logger.info(f"User ID: {user_id}, Nickname: {user_name}, Username: {telegram_username}, EAN Count: {ean_count}, File: {file.file_name}")
 
                 # Отправляем сообщение владельцу бота
                 owner_message = (
