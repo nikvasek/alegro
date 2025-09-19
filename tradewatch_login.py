@@ -74,6 +74,15 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
             with driver_creation_lock:
                 print(f"🔒 Попытка {attempt + 1}/{max_retries}: Создание Chrome драйвера...")
                 
+                # КРИТИЧЕСКИ ВАЖНО: Принудительно убиваем висячие Chrome процессы
+                try:
+                    import subprocess
+                    subprocess.run(["pkill", "-9", "chrome"], capture_output=True, check=False)
+                    subprocess.run(["pkill", "-9", "chromedriver"], capture_output=True, check=False)
+                    time.sleep(1)  # Даем время процессам завершиться
+                except:
+                    pass  # Игнорируем ошибки очистки процессов
+                
                 # Создаем опции Chrome
                 options = webdriver.ChromeOptions()
                 
@@ -81,12 +90,21 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                     options.add_argument("--headless")
                     options.add_argument("--disable-gpu")
                 
-                # Основные опции для стабильной работы
+                # Основные опции для стабильной работы + анти-краш настройки
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-dev-shm-usage")
                 options.add_argument("--disable-web-security")
                 options.add_argument("--disable-features=VizDisplayCompositor")
                 options.add_argument("--window-size=1920,1080")
+                options.add_argument("--disable-logging")
+                options.add_argument("--disable-extensions")
+                options.add_argument("--disable-crash-reporter")
+                options.add_argument("--disable-in-process-stack-traces")
+                options.add_argument("--silent")
+                options.add_argument("--log-level=3")  # Минимальный уровень логирования
+                options.add_argument("--disable-background-timer-throttling")
+                options.add_argument("--disable-backgrounding-occluded-windows")
+                options.add_argument("--disable-renderer-backgrounding")
                 
                 # Настройка загрузки файлов
                 if download_dir:
@@ -115,9 +133,21 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                     return driver
                         
         except Exception as e:
-            print(f"❌ Попытка {attempt + 1} неудачна: {e}")
+            error_msg = str(e)
+            print(f"❌ Попытка {attempt + 1} неудачна: {error_msg}")
+            
+            # Дополнительная очистка при версионных конфликтах
+            if "version" in error_msg.lower() or "session not created" in error_msg.lower():
+                print("🚨 Обнаружен версионный конфликт Chrome/ChromeDriver! Принудительная очистка...")
+                try:
+                    subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True, check=False)
+                    subprocess.run(["pkill", "-9", "-f", "chromedriver"], capture_output=True, check=False)
+                    time.sleep(2)
+                except:
+                    pass
+            
             if attempt < max_retries - 1:
-                delay = (attempt + 1) * 2 + random.uniform(0, 1)  # Экспоненциальная задержка с рандомом
+                delay = (attempt + 1) * 3 + random.uniform(0, 2)  # Увеличенная задержка для версионных конфликтов
                 print(f"⏳ Ждем {delay:.1f} секунд перед следующей попыткой...")
                 time.sleep(delay)
             else:
