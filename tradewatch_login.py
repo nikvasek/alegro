@@ -21,6 +21,7 @@ import json
 import psutil
 import subprocess
 import signal
+import socket
 
 # Глобальная блокировка для создания драйверов
 driver_creation_lock = threading.Lock()
@@ -444,9 +445,6 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                 print("🔍 НАСТРОЙКА АВТОПОРТА WEBDRIVER:")
                 
                 # Генерируем случайный свободный порт для каждого драйвера
-                import random
-                import socket
-                
                 def find_free_port():
                     """Находит свободный порт в диапазоне 9515-9600"""
                     for _ in range(10):  # Максимум 10 попыток
@@ -2177,7 +2175,7 @@ def process_multiple_batches_parallel(main_driver, ean_groups, download_dir, max
         print(f"Обрабатываем параллельно группы {i+1}-{min(i+max_parallel, len(ean_groups))}")
         
         # Используем потоки для параллельной обработки с отдельными браузерами
-        with concurrent.futures.ThreadPoolExecutor(max_workers=current_max_parallel) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as executor:
             futures = []
             
             for j, group in enumerate(batch_to_process):
