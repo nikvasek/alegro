@@ -103,7 +103,7 @@ def log_browser_event(logger: logging.Logger, message: str,
 
 def log_user_activity(logger: logging.Logger, user_id: str, 
                      username: str, nickname: str, ean_count: int, 
-                     filename: str):
+                     uploaded_file: str):
     """
     Логирование активности пользователя
     """
@@ -112,8 +112,8 @@ def log_user_activity(logger: logging.Logger, user_id: str,
         'username': username,
         'nickname': nickname,
         'ean_count': ean_count,
-        'filename': filename,
+        'uploaded_file': uploaded_file,
         'event_type': 'user_activity'
     }
-    logger.info(f"User activity: {username} uploaded {filename} with {ean_count} EANs", 
+    logger.info(f"User activity: {username} uploaded {uploaded_file} with {ean_count} EANs", 
                extra=extra)
