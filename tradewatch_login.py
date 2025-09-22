@@ -151,18 +151,27 @@ def webdriver_request_with_retry(driver, url, max_retries=3, base_delay=2):
     print(f"❌ Не удалось загрузить {url} за {max_retries} попыток")
     return False
 
-def create_stable_webdriver(service, options, max_connection_retries=5):
+def create_stable_webdriver(service, options, max_connection_retries=None):
     """
     Создает WebDriver с устойчивостью к Connection refused ошибкам
     
     Args:
         service: ChromeDriver service
         options: Chrome options
-        max_connection_retries: максимальное количество попыток при Connection refused
+        max_connection_retries: максимальное количество попыток при Connection refused (если None, берется из config)
         
     Returns:
         webdriver.Chrome или None
     """
+    # Получаем настройки из config
+    if max_connection_retries is None:
+        max_connection_retries = config.RESOURCE_MANAGEMENT.get('webdriver_connection_retries', 5)
+    
+    base_delay = config.RESOURCE_MANAGEMENT.get('connection_retry_base_delay', 3)
+    cleanup_on_error = config.RESOURCE_MANAGEMENT.get('chromedriver_cleanup_on_connection_error', True)
+    connection_timeout = config.RESOURCE_MANAGEMENT.get('webdriver_connection_timeout', 30)
+    session_validation = config.RESOURCE_MANAGEMENT.get('webdriver_session_validation', True)
+    
     for conn_attempt in range(max_connection_retries):
         try:
             print(f"🔗 Попытка соединения {conn_attempt + 1}/{max_connection_retries}...")
@@ -170,25 +179,31 @@ def create_stable_webdriver(service, options, max_connection_retries=5):
             # Создаем драйвер
             driver = webdriver.Chrome(service=service, options=options)
             
-            # Тестируем соединение простым запросом
-            try:
-                # Устанавливаем базовые таймауты
-                driver.set_page_load_timeout(30)
-                driver.implicitly_wait(5)
-                
-                # Тестовая команда для проверки соединения
-                driver.execute_script("return navigator.userAgent;")
-                print(f"   ✅ Соединение с ChromeDriver установлено успешно")
-                return driver
-                
-            except Exception as test_error:
-                print(f"   ⚠️ Ошибка тестирования соединения: {test_error}")
-                # Закрываем драйвер если тест не прошел
+            # Тестируем соединение если включена валидация
+            if session_validation:
                 try:
-                    driver.quit()
-                except:
-                    pass
-                raise test_error
+                    # Устанавливаем таймауты
+                    driver.set_page_load_timeout(connection_timeout)
+                    driver.implicitly_wait(5)
+                    
+                    # Тестовая команда для проверки соединения
+                    driver.execute_script("return navigator.userAgent;")
+                    print(f"   ✅ Соединение с ChromeDriver установлено успешно")
+                    return driver
+                    
+                except Exception as test_error:
+                    print(f"   ⚠️ Ошибка валидации соединения: {test_error}")
+                    # Закрываем драйвер если тест не прошел
+                    try:
+                        driver.quit()
+                    except:
+                        pass
+                    raise test_error
+            else:
+                # Без валидации просто возвращаем драйвер
+                driver.set_page_load_timeout(connection_timeout)
+                driver.implicitly_wait(5)
+                return driver
                 
         except Exception as e:
             error_msg = str(e).lower()
@@ -199,26 +214,27 @@ def create_stable_webdriver(service, options, max_connection_retries=5):
                 print(f"   🔍 Обнаружена ошибка Connection refused")
                 
                 if conn_attempt < max_connection_retries - 1:
-                    # Увеличиваем задержку при повторных Connection refused
-                    retry_delay = (conn_attempt + 1) * 3 + random.uniform(1, 3)
+                    # Рассчитываем задержку с экспоненциальным ростом
+                    retry_delay = base_delay * (conn_attempt + 1) + random.uniform(1, 3)
                     print(f"   ⏳ Connection refused: ждем {retry_delay:.1f} сек...")
                     time.sleep(retry_delay)
                     
                     # Принудительная очистка старых процессов chromedriver
-                    try:
-                        print(f"   🧹 Очистка зависших chromedriver процессов...")
-                        subprocess.run(["pkill", "-9", "-f", "chromedriver"], 
-                                     capture_output=True, check=False)
-                        time.sleep(2)
-                    except:
-                        pass
+                    if cleanup_on_error:
+                        try:
+                            print(f"   🧹 Очистка зависших chromedriver процессов...")
+                            subprocess.run(["pkill", "-9", "-f", "chromedriver"], 
+                                         capture_output=True, check=False)
+                            time.sleep(2)
+                        except:
+                            pass
                 else:
                     print(f"   💥 Все попытки соединения исчерпаны")
                     return None
             else:
                 # Другие ошибки - пробуем еще раз с меньшей задержкой
                 if conn_attempt < max_connection_retries - 1:
-                    retry_delay = 2 + random.uniform(0, 1)
+                    retry_delay = base_delay + random.uniform(0, 1)
                     print(f"   ⏳ Другая ошибка: ждем {retry_delay:.1f} сек...")
                     time.sleep(retry_delay)
                 else:
@@ -737,7 +753,7 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                     else:
                         service = Service(executable_path="/usr/bin/chromedriver", port=driver_port)
                     
-                    driver = create_stable_webdriver(service, options, max_connection_retries=5)
+                    driver = create_stable_webdriver(service, options)
                     
                     if driver is None:
                         raise Exception("Не удалось создать стабильное соединение с системным ChromeDriver")
@@ -793,7 +809,7 @@ def create_chrome_driver_safely(headless=True, download_dir=None, max_retries=3)
                             service = Service(ChromeDriverManager().install())
                         else:
                             service = Service(ChromeDriverManager().install(), port=driver_port)
-                        driver = create_stable_webdriver(service, options, max_connection_retries=5)
+                        driver = create_stable_webdriver(service, options)
                         
                         if driver is None:
                             raise Exception("Не удалось создать стабильное соединение с ChromeDriverManager")
@@ -1337,7 +1353,7 @@ def process_ean_codes_batch(ean_codes_batch, download_dir, batch_number=1, headl
     
     # Инициализация драйвера
     service = Service(ChromeDriverManager().install())
-    driver = create_stable_webdriver(service, options, max_connection_retries=5)
+    driver = create_stable_webdriver(service, options)
     
     if driver is None:
         raise Exception("Не удалось создать стабильное соединение с ChromeDriver для batch обработки")
@@ -1998,7 +2014,7 @@ def process_batch_with_new_browser(ean_codes_batch, download_dir, batch_number, 
     
     # 🆕 СОЗДАЕМ НОВЫЙ ДРАЙВЕР для каждой группы
     service = Service(ChromeDriverManager().install())
-    driver = create_stable_webdriver(service, options, max_connection_retries=5)
+    driver = create_stable_webdriver(service, options)
     
     if driver is None:
         raise Exception("Не удалось создать стабильное соединение с ChromeDriver для новой сессии")
@@ -2293,7 +2309,7 @@ def process_supplier_file_with_tradewatch_old_version(supplier_file_path, downlo
         
         # Инициализация драйвера один раз
         service = Service(ChromeDriverManager().install())
-        driver = create_stable_webdriver(service, options, max_connection_retries=5)
+        driver = create_stable_webdriver(service, options)
         
         if driver is None:
             raise Exception("Не удалось создать стабильное соединение с ChromeDriver для обработки EAN кодов")
@@ -2945,7 +2961,7 @@ def initialize_browser_and_login(headless=None, download_dir=None):
         # Пытаемся использовать системный Chrome
         options.binary_location = "/usr/bin/google-chrome"  # Путь к Chrome в Railway
         service = Service(executable_path="/usr/bin/chromedriver")  # Путь к chromedriver
-        driver = create_stable_webdriver(service, options, max_connection_retries=5)
+        driver = create_stable_webdriver(service, options)
         
         if driver is None:
             raise Exception("Не удалось создать стабильное соединение с системным Chrome")
@@ -2955,7 +2971,7 @@ def initialize_browser_and_login(headless=None, download_dir=None):
         print(f"⚠️  Системный Chrome не найден, пробуем ChromeDriverManager: {e}")
         try:
             service = Service(ChromeDriverManager().install())
-            driver = create_stable_webdriver(service, options, max_connection_retries=5)
+            driver = create_stable_webdriver(service, options)
             
             if driver is None:
                 raise Exception("Не удалось создать стабильное соединение через ChromeDriverManager")

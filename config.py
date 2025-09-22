@@ -295,5 +295,12 @@ RESOURCE_MANAGEMENT = {
     'memory_check_before_browser': True,  # Проверять память перед запуском браузера
     'min_free_memory_mb': 400,         # Минимальный объем свободной памяти (MB) - УВЕЛИЧЕНО
     'cpu_check_before_browser': True,  # Проверять CPU перед запуском браузера
-    'max_cpu_usage_percent': 70        # Максимальная загрузка CPU (%) - УМЕНЬШЕНО для стабильности
+    'max_cpu_usage_percent': 70,       # Максимальная загрузка CPU (%) - УМЕНЬШЕНО для стабильности
+    
+    # ✨ НОВЫЕ НАСТРОЙКИ ДЛЯ CONNECTION REFUSED ОБРАБОТКИ
+    'webdriver_connection_retries': 5,  # Количество попыток при Connection refused
+    'connection_retry_base_delay': 3,   # Базовая задержка между попытками соединения (сек)
+    'chromedriver_cleanup_on_connection_error': True,  # Очищать chromedriver процессы при ошибках соединения
+    'webdriver_connection_timeout': 30,  # Таймаут соединения с WebDriver (сек)
+    'webdriver_session_validation': True,  # Проверять валидность сессии после создания
 }
